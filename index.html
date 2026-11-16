@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>FYAgent Survivors</title>
+  <link rel="stylesheet" href="css/hud.css">
+  <!-- 区块 2 [IMPORT MAP] Three.js r168。零构建，需本地 HTTP，不能用 file://。 -->
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.168.0/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.168.0/examples/jsm/"
+    }
+  }
+  </script>
+</head>
+<body>
+  <!-- 区块 1 [STYLE & HUD DOM] 常驻：生命、经验、计时、击杀。其余按需显示。 -->
+  <canvas id="view"></canvas>
+  <div id="menu">
+    <img id="cover" src="assets/cover/fyagent_setting.png" alt="FYAgent 角色设定">
+    <div id="menu-copy">
+      <h1 id="menu-title">FYAgent Survivors</h1>
+      <div class="menu-actions">
+        <button id="btn-start" class="menu-btn primary" type="button">开始游戏</button>
+        <button id="btn-howto" class="menu-btn" type="button">游玩说明</button>
+      </div>
+    </div>
+  </div>
+  <div id="howto" hidden>
+    <div class="howto-panel">
+      <h2>游玩说明</h2>
+      <p>走位就是操作。武器会自己攻击，不用瞄准。</p>
+      <ul>
+        <li>键盘：WASD 或方向键移动，按住 Shift 慢走，空格翻滚，Esc 暂停。</li>
+        <li>手柄：左摇杆移动，A 或 RT 翻滚，Start 暂停。</li>
+        <li>触屏：左半边拖动移动，右半边双击翻滚。</li>
+        <li>走出场地会从对面出现，镜头跟着扫过去。</li>
+        <li>沿着土路跑会更快，路中间的两道车辙就是中线。</li>
+        <li>撑到 5:00，击败赫塞重甲骑士即通关。</li>
+      </ul>
+      <button id="btn-howto-back" class="menu-btn primary" type="button">返回</button>
+    </div>
+  </div>
+  <div id="hud">
+    <div class="bar">
+      <div class="bar-track"><div id="hp-fill"></div></div>
+      <div class="xp">
+        <div class="bar-track"><div id="xp-fill"></div></div>
+        <div id="level">Lv.1</div>
+      </div>
+    </div>
+    <div id="timer">0:00</div>
+    <div id="kills">0</div>
+    <div id="boss-bar" hidden>
+      <div id="boss-name">赫塞重甲骑士</div>
+      <div class="bar-track"><div id="boss-fill"></div></div>
+    </div>
+    <div id="chest-arrows"></div>
+    <div id="joystick" hidden><div id="stick"></div></div>
+    <div id="pad-hint" hidden>摇杆移动 · A 闪避 · Start 暂停</div>
+    <div id="pause" hidden>暂停</div>
+    <div id="boot-note" hidden></div>
+    <div id="levelup" hidden>
+      <div id="cards">
+        <button class="card" type="button" data-pick="0"></button>
+        <button class="card" type="button" data-pick="1"></button>
+        <button class="card" type="button" data-pick="2"></button>
+      </div>
+    </div>
+    <div id="result" hidden>
+      <div id="result-panel">
+        <h1 id="result-title"></h1>
+        <p id="result-stats"></p>
+        <button id="retry" type="button">再来一局</button>
+      </div>
+    </div>
+  </div>
+  <!-- 区块 3–7 在 js/：config、state、pipeline、六个系统、main。 -->
+  <script>
+    window.addEventListener('error', (event) => {
+      const note = document.getElementById('boot-note');
+      if (!note) return;
+      note.hidden = false;
+      note.textContent = event.message || '页面脚本出错';
+    });
+  </script>
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>

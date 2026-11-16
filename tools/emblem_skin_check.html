@@ -1,0 +1,564 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Boss 纹章 · 厚度贴合验证</title>
+<style>
+  html,body{margin:0;height:100%;background:#15171b;font-family:system-ui,"Microsoft YaHei",sans-serif;color:#d9dee7}
+  #hud{position:fixed;left:14px;top:12px;font-size:13px;line-height:1.65;z-index:2}
+  #hud b{color:#fff}
+</style>
+</head>
+<body>
+<div id="hud"><b>Boss 纹章 · 厚度贴合验证</b><br><span id="stat">加载中…</span></div>
+<script type="importmap">
+{ "imports": {
+  "three": "https://unpkg.com/three@0.168.0/build/three.module.js",
+  "three/addons/": "https://unpkg.com/three@0.168.0/examples/jsm/"
+} }
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
+
+const QS = new URLSearchParams(location.search);
+const stat = document.getElementById('stat');
+const W = 1280, H = 800;
+
+const MODE = QS.get('mode') === 'rigid' ? 'rigid' : 'skin';
+const DBG = QS.get('dbg') === '1';
+
+// 厚度（米）。0 = 退回旧版单层贴片。
+const THICK = Number(QS.get('thick') ?? '0.014');
+// 内表面离开甲面的距离，避免与甲片同面 z-fighting
+const OFF_IN = 0.0015;
+// 纹章正面相对外壳顶面再前推的量，让贴图压住壳的正面
+const FACE_LIFT = 0.0006;
+// 缝隙抹平阈值：某采样点比邻域中值凹进超过此值，就沿法线拉平
+const DIP_THRESH = 0.0035;
+
+const CW = Number(QS.get('w') ?? '0.15');
+const CH = Number(QS.get('h') ?? '0.175');
+const CY = Number(QS.get('y') ?? '0.012');
+const COLS = 64, ROWS = 74;
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+renderer.setSize(W, H);
+renderer.setPixelRatio(1);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x15171b);
+scene.add(new THREE.HemisphereLight(0xd3dbe6, 0x4a4234, 2.2));
+const d1 = new THREE.DirectionalLight(0xffffff, 2.4); d1.position.set(2.2, 4.5, 4); scene.add(d1);
+const d2 = new THREE.DirectionalLight(0xbcd0ff, 1.0); d2.position.set(-3, 2, 2.5); scene.add(d2);
+const d3 = new THREE.DirectionalLight(0xffe6c4, 0.6); d3.position.set(0, 1.5, -4); scene.add(d3);
+
+const draco = new DRACOLoader();
+draco.setDecoderPath('/vendor/draco/');
+const loader = new GLTFLoader();
+loader.setDRACOLoader(draco);
+
+const tex = new THREE.TextureLoader().load('/assets/emblem_knight.png');
+tex.colorSpace = THREE.SRGBColorSpace;
+tex.anisotropy = 8;
+
+// 读出贴图 alpha，让几何轮廓严格等于盾形，而不是一个靠 alphaTest 硬裁的矩形
+const texImg = new Image();
+texImg.src = '/assets/emblem_knight.png';
+await texImg.decode();
+const tcv = document.createElement('canvas');
+tcv.width = texImg.width; tcv.height = texImg.height;
+const tctx = tcv.getContext('2d', { willReadFrequently: true });
+tctx.drawImage(texImg, 0, 0);
+const texData = tctx.getImageData(0, 0, tcv.width, tcv.height).data;
+// three 默认 flipY=true，UV 的 v 向上，图像 y 向下
+function alphaAt(u, v) {
+  const x = Math.min(tcv.width - 1, Math.max(0, Math.round(u * (tcv.width - 1))));
+  const y = Math.min(tcv.height - 1, Math.max(0, Math.round((1 - v) * (tcv.height - 1))));
+  return texData[(y * tcv.width + x) * 4 + 3];
+}
+
+stat.textContent = '加载 Boss 模型…';
+let gltf;
+try {
+  gltf = await loader.loadAsync('/models/rigged_v1/boss_knight_rigged_v1.glb');
+} catch (e) {
+  stat.textContent = '模型加载失败：' + e.message;
+  window.__report = { error: e.message };
+  throw e;
+}
+
+const root = gltf.scene;
+const b0 = new THREE.Box3().setFromObject(root);
+const s0 = new THREE.Vector3(); b0.getSize(s0);
+root.scale.setScalar(1.8 / s0.y);
+root.updateMatrixWorld(true);
+const b1 = new THREE.Box3().setFromObject(root);
+root.position.y -= b1.min.y;
+scene.add(root);
+root.updateMatrixWorld(true);
+
+let chest = null, mesh = null;
+root.traverse(o => {
+  if (o.isBone && /^chest$/i.test(o.name)) chest = o;
+  if (o.isSkinnedMesh && !mesh) mesh = o;
+});
+if (!mesh || !chest) { window.__report = { error: 'mesh/chest missing' }; throw new Error('missing'); }
+mesh.skeleton.update();
+mesh.updateMatrixWorld(true);
+
+const geo = mesh.geometry;
+const JOINTS = geo.attributes.skinIndex, WEIGHTS = geo.attributes.skinWeight;
+const chestW = new THREE.Vector3();
+chest.getWorldPosition(chestW);
+
+// ---------- 1. 采样：沿 -Z 打射线到实际渲染表面 ----------
+function sampleGrid(w, h, yOff, cols, rows) {
+  const rc = new THREE.Raycaster();
+  const dir = new THREE.Vector3(0, 0, -1);
+  const cx = chestW.x, cy = chestW.y + yOff, cz = chestW.z;
+  const cells = new Array(cols * rows).fill(null);
+
+  for (let j = 0; j < rows; j++) {
+    for (let i = 0; i < cols; i++) {
+      const u = i / (cols - 1), v = j / (rows - 1);
+      // 盾形外不生成几何，避免矩形外框被 alphaTest 裁出锯齿
+      const ta = alphaAt(u, v);
+      if (ta < 40) continue;
+      const o = new THREE.Vector3(cx + (u - 0.5) * w, cy + (v - 0.5) * h, cz + 0.75);
+      rc.set(o, dir);
+      const hits = rc.intersectObject(mesh, false);
+      if (!hits.length) continue;
+      const hit = hits[0];
+      const n = hit.face.normal.clone().transformDirection(mesh.matrixWorld);
+      if (n.z < 0.15) continue;                       // 只取正面朝外的面
+      const p = hit.point.clone();
+
+      // 继承命中面的蒙皮权重（重心坐标插值）
+      const pa = new THREE.Vector3().fromBufferAttribute(geo.attributes.position, hit.face.a);
+      const pb = new THREE.Vector3().fromBufferAttribute(geo.attributes.position, hit.face.b);
+      const pc = new THREE.Vector3().fromBufferAttribute(geo.attributes.position, hit.face.c);
+      const bary = new THREE.Triangle(pa, pb, pc).getBarycoord(
+        mesh.worldToLocal(hit.point.clone()), new THREE.Vector3()
+      );
+      const jidx = [0, 0, 0, 0], wsum = [0, 0, 0, 0];
+      if (bary) {
+        const bw = [bary.x, bary.y, bary.z];
+        const vs = [hit.face.a, hit.face.b, hit.face.c];
+        const acc = new Map();
+        for (let k = 0; k < 3; k++) {
+          if (bw[k] <= 0) continue;
+          for (let s = 0; s < 4; s++) {
+            const jj = JOINTS.getComponent(vs[k], s);
+            const ww = WEIGHTS.getComponent(vs[k], s) * bw[k];
+            if (ww <= 0) continue;
+            acc.set(jj, (acc.get(jj) || 0) + ww);
+          }
+        }
+        const top = [...acc.entries()].sort((a, b) => b[1] - a[1]).slice(0, 4);
+        const sum = top.reduce((a, b) => a + b[1], 0) || 1;
+        top.forEach(([jj, ww], k) => { jidx[k] = jj; wsum[k] = ww / sum; });
+      }
+      cells[j * cols + i] = { p, n, uv: [u, v], j: jidx, w: wsum, a: ta };
+    }
+  }
+  return cells;
+}
+
+// ---------- 1.5 清理：剔除打到别的甲片上的离群点，再腐蚀掉锯齿边界 ----------
+function refineCells(cells, cols, rows) {
+  const n = cols * rows;
+  const out = cells.slice();
+
+  // (a) 深度离群：命中点若比整体中位数深/浅太多，说明打到了腹甲、颈甲等别的部件
+  const zs = cells.filter(Boolean).map(c => c.p.z).sort((a, b) => a - b);
+  if (zs.length > 16) {
+    const med = zs[Math.floor(zs.length / 2)];
+    let dropped = 0;
+    for (let k = 0; k < n; k++) {
+      const c = out[k];
+      if (!c) continue;
+      if (Math.abs(c.p.z - med) > 0.055) { out[k] = null; dropped++; }
+    }
+    out.dropped = dropped;
+  }
+
+  // (b) 腐蚀：邻域 8 格中有效点少于 6 个的，判为边缘毛刺，一并删掉
+  let eroded = 0;
+  const tmp = out.slice();
+  for (let j = 0; j < rows; j++) {
+    for (let i = 0; i < cols; i++) {
+      const k = j * cols + i;
+      if (!tmp[k]) continue;
+      let ok = 0;
+      for (let dj = -1; dj <= 1; dj++) {
+        for (let di = -1; di <= 1; di++) {
+          if (!dj && !di) continue;
+          const jj = j + dj, ii = i + di;
+          if (jj < 0 || jj >= rows || ii < 0 || ii >= cols) continue;
+          if (tmp[jj * cols + ii]) ok++;
+        }
+      }
+      if (ok < 3) { out[k] = null; eroded++; }
+    }
+  }
+  out.eroded = eroded;
+  return out;
+}
+
+// ---------- 2. 拟合胸甲弧度：把逐点台阶换成一张光滑弧面 ----------
+// 逐点贴合会把甲片的叠压台阶一起抄进来，纹章表面就碎。铸造徽章是刚性件，
+// 应该包在一个平均曲面上，而不是跟着缝隙起伏。
+function solveLin(A, B, n) {
+  const M = A.map(r => Array.from(r));
+  const v = Array.from(B);
+  for (let i = 0; i < n; i++) {
+    let piv = i;
+    for (let r = i + 1; r < n; r++) if (Math.abs(M[r][i]) > Math.abs(M[piv][i])) piv = r;
+    [M[i], M[piv]] = [M[piv], M[i]];
+    [v[i], v[piv]] = [v[piv], v[i]];
+    const d = M[i][i];
+    if (Math.abs(d) < 1e-12) continue;
+    for (let r = i + 1; r < n; r++) {
+      const f = M[r][i] / d;
+      if (!f) continue;
+      for (let c = i; c < n; c++) M[r][c] -= f * M[i][c];
+      v[r] -= f * v[i];
+    }
+  }
+  const x = new Array(n).fill(0);
+  for (let i = n - 1; i >= 0; i--) {
+    let sum = v[i];
+    for (let c = i + 1; c < n; c++) sum -= M[i][c] * x[c];
+    x[i] = Math.abs(M[i][i]) < 1e-12 ? 0 : sum / M[i][i];
+  }
+  return x;
+}
+
+// 二维二次曲面拟合 z = f(x,y)。逐点贴合会抄进甲片的叠压台阶，纹章表面就碎；
+// 铸造徽章是刚性件，应该包在一张光滑曲面上。
+function fitArc(cells, cols, rows) {
+  const pts = [];
+  cells.forEach(c => { if (c) pts.push(c.p); });
+  if (pts.length < 60) return { ok: false };
+
+  let mx = 0, my = 0;
+  for (const p of pts) { mx += p.x; my += p.y; }
+  mx /= pts.length; my /= pts.length;
+
+  // 基函数 [1, dx, dx², dy, dy², dx·dy]
+  const NF = 6;
+  const A = Array.from({ length: NF }, () => new Float64Array(NF));
+  const B = new Float64Array(NF);
+  for (const p of pts) {
+    const dx = p.x - mx, dy = p.y - my;
+    const f = [1, dx, dx * dx, dy, dy * dy, dx * dy];
+    for (let i = 0; i < NF; i++) {
+      B[i] += f[i] * p.z;
+      for (let j = 0; j < NF; j++) A[i][j] += f[i] * f[j];
+    }
+  }
+  const q = solveLin(A, B, NF);      // [c, a, b, d, e, f]
+  const [c0, a1, b2, d1, e2, f1] = q;
+  const zAt = (dx, dy) => c0 + a1 * dx + b2 * dx * dx + d1 * dy + e2 * dy * dy + f1 * dx * dy;
+
+  // 残差取 90 分位：把整块纹章抬到绝大多数甲片之外，底面才压得住缝隙
+  const res = pts.map(p => p.z - zAt(p.x - mx, p.y - my)).sort((a, b) => a - b);
+  const lift = res[Math.floor(res.length * 0.90)] + 0.0012;
+
+  const out = cells.map(c => {
+    if (!c) return null;
+    const dx = c.p.x - mx, dy = c.p.y - my;
+    const dzdx = a1 + 2 * b2 * dx + f1 * dy;
+    const dzdy = d1 + 2 * e2 * dy + f1 * dx;
+    return {
+      p: new THREE.Vector3(mx + dx, my + dy, zAt(dx, dy) + lift),
+      n: new THREE.Vector3(-dzdx, -dzdy, 1).normalize(),
+      uv: c.uv, j: c.j, w: c.w,
+    };
+  });
+  out.ok = true;
+  out.lift = lift;
+  // 横向曲率半径，仅用于报告
+  const xseg = pts.map(p => p.x - mx).sort((a, b) => a - b);
+  const halfW = xseg[Math.floor(xseg.length * 0.95)];
+  out.sagitta = Math.abs(b2) * halfW * halfW;
+  return out;
+}
+
+// ---------- 2.5 到轮廓的格距：厚度靠边收拢，边缘才没有齿 ----------
+function edgeDist(cells, cols, rows) {
+  const INF = 1e9;
+  const d = cells.map(c => c ? INF : 0);
+  const relax = () => {
+    for (let j = 0; j < rows; j++) {
+      for (let i = 0; i < cols; i++) {
+        const k = j * cols + i;
+        if (!d[k]) continue;
+        let m = d[k];
+        if (i > 0) m = Math.min(m, d[k - 1] + 1);
+        if (j > 0) m = Math.min(m, d[k - cols] + 1);
+        d[k] = m;
+      }
+    }
+    for (let j = rows - 1; j >= 0; j--) {
+      for (let i = cols - 1; i >= 0; i--) {
+        const k = j * cols + i;
+        if (!d[k]) continue;
+        let m = d[k];
+        if (i < cols - 1) m = Math.min(m, d[k + 1] + 1);
+        if (j < rows - 1) m = Math.min(m, d[k + cols] + 1);
+        d[k] = m;
+      }
+    }
+  };
+  for (let pass = 0; pass < 3; pass++) relax();
+  return d;
+}
+
+// ---------- 3. 生成有厚度的壳：外表面 + 内表面 + 侧壁 ----------
+function buildShell(cells, cols, rows, thick) {
+  const n = cols * rows;
+  const innerL = new Array(n).fill(null);
+  const outerL = new Array(n).fill(null);
+  const meta = new Array(n).fill(null);
+
+  const dist = edgeDist(cells, cols, rows);
+  const T = Math.max(thick, OFF_IN);
+  // 边缘到内部 4 格做 smoothstep 斜坡：边缘几乎贴着甲面，所以侧壁在那里高度为 0，
+  // 轮廓不会再挂出一圈齿；往里 4 格（约 9mm）达到满厚，读作铸造件的倒角。
+  const ramp = dd => {
+    const t = Math.min(1, Math.max(0, (dd - 1) / 2.5));
+    return t * t * (3 - 2 * t);
+  };
+  for (let k = 0; k < n; k++) {
+    const c = cells[k];
+    if (!c) continue;
+    const tOut = OFF_IN + (T - OFF_IN) * (THICK > 0 ? ramp(dist[k]) : 0);
+    innerL[k] = mesh.worldToLocal(c.p.clone().addScaledVector(c.n, OFF_IN));
+    outerL[k] = mesh.worldToLocal(c.p.clone().addScaledVector(c.n, tOut));
+    meta[k] = c;
+  }
+
+  // 预分配顶点
+  const posIn = [], posOut = [], uvIn = [], uvOut = [], siIn = [], swIn = [], siOut = [], swOut = [];
+  const vIn = new Array(n).fill(-1), vOut = new Array(n).fill(-1);
+  for (let k = 0; k < n; k++) {
+    if (!cells[k]) continue;
+    vIn[k] = posIn.length / 3;
+    posIn.push(innerL[k].x, innerL[k].y, innerL[k].z);
+    uvIn.push(meta[k].uv[0], meta[k].uv[1]);
+    siIn.push(...meta[k].j); swIn.push(...meta[k].w);
+    vOut[k] = posOut.length / 3;
+    posOut.push(outerL[k].x, outerL[k].y, outerL[k].z);
+    uvOut.push(meta[k].uv[0], meta[k].uv[1]);
+    siOut.push(...meta[k].j); swOut.push(...meta[k].w);
+  }
+
+  const quadOk = (j, i) => {
+    if (j < 0 || i < 0 || j >= rows - 1 || i >= cols - 1) return false;
+    return cells[j * cols + i] && cells[j * cols + i + 1]
+        && cells[(j + 1) * cols + i] && cells[(j + 1) * cols + i + 1];
+  };
+
+  // 外表面（朝外）与内表面（朝内）
+  const idxOut = [], idxIn = [];
+  let quads = 0;
+  for (let j = 0; j < rows - 1; j++) {
+    for (let i = 0; i < cols - 1; i++) {
+      if (!quadOk(j, i)) continue;
+      const a = vOut[j * cols + i], b = vOut[j * cols + i + 1];
+      const d = vOut[(j + 1) * cols + i + 1], c = vOut[(j + 1) * cols + i];
+      idxOut.push(a, b, c, b, d, c);
+      const ai = vIn[j * cols + i], bi = vIn[j * cols + i + 1];
+      const di = vIn[(j + 1) * cols + i + 1], ci = vIn[(j + 1) * cols + i];
+      idxIn.push(ai, ci, bi, bi, ci, di);   // 反绕序
+      quads++;
+    }
+  }
+
+  // 侧壁：横边与纵边，若相邻 quad 缺失即为边界
+  const wallPos = [], wallUv = [], wallSi = [], wallSw = [], idxWall = [];
+  const pushV = (p, uv, j, w) => {
+    const id = wallPos.length / 3;
+    wallPos.push(p.x, p.y, p.z); wallUv.push(uv[0], uv[1]);
+    wallSi.push(...j); wallSw.push(...w);
+    return id;
+  };
+  let wallSegs = 0;
+
+  const addWall = (k1, k2) => {
+    const o1 = vOut[k1], o2 = vOut[k2], i1 = vIn[k1], i2 = vIn[k2];
+    if (o1 < 0 || o2 < 0 || i1 < 0 || i2 < 0) return;
+    const a = pushV(outerL[k1], meta[k1].uv, meta[k1].j, meta[k1].w);
+    const b = pushV(outerL[k2], meta[k2].uv, meta[k2].j, meta[k2].w);
+    const c = pushV(innerL[k2], meta[k2].uv, meta[k2].j, meta[k2].w);
+    const d = pushV(innerL[k1], meta[k1].uv, meta[k1].j, meta[k1].w);
+    idxWall.push(a, b, c, a, c, d);
+    wallSegs++;
+  };
+
+  for (let j = 0; j < rows; j++) {
+    for (let i = 0; i < cols; i++) {
+      const k = j * cols + i;
+      if (!cells[k]) continue;
+      // 横边 (j,i)-(j,i+1)：相邻 quad 为 (j-1,i) 与 (j,i)
+      if (i < cols - 1 && cells[k + 1]) {
+        const up = quadOk(j - 1, i), dn = quadOk(j, i);
+        if (!up || !dn) addWall(k, k + 1);
+      }
+      // 纵边 (j,i)-(j+1,i)：相邻 quad 为 (j,i-1) 与 (j,i)
+      if (j < rows - 1 && cells[k + cols]) {
+        const lf = quadOk(j, i - 1), rt = quadOk(j, i);
+        if (!lf || !rt) addWall(k, k + cols);
+      }
+    }
+  }
+
+  const mk = (pos, uv, si, sw, idx) => {
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+    g.setAttribute('skinIndex', new THREE.Uint16BufferAttribute(si, 4));
+    g.setAttribute('skinWeight', new THREE.Float32BufferAttribute(sw, 4));
+    g.setIndex(idx);
+    g.computeVertexNormals();
+    return g;
+  };
+
+  const shellPos = posIn.concat(wallPos);
+  const shellUv = uvIn.concat(wallUv);
+  const shellSi = siIn.concat(wallSi);
+  const shellSw = swIn.concat(wallSw);
+  const wallOffset = posIn.length / 3;
+  const idxShell = idxIn.concat(idxWall.map(v => v + wallOffset));
+
+  return {
+    faceGeo: mk(posOut, uvOut, siOut, swOut, idxOut),
+    shellGeo: mk(shellPos, shellUv, shellSi, shellSw, idxShell),
+    quads, wallSegs, verts: vOut.filter(v => v >= 0).length,
+  };
+}
+
+// ---------- 4. 材质 ----------
+const matFace = new THREE.MeshStandardMaterial({
+  map: tex, transparent: true, depthWrite: false,
+  color: DBG ? 0xff00ff : 0xf0eae2, roughness: 0.72, metalness: 0.06,
+  emissive: DBG ? 0xff00ff : 0x000000, depthTest: !DBG,
+  side: DBG ? THREE.DoubleSide : THREE.FrontSide,
+  polygonOffset: true, polygonOffsetFactor: -9, polygonOffsetUnits: -9,
+});
+// 壳：几何已按贴图 alpha 裁成盾形，这里不再用 alphaTest，直接用金属色出侧壁厚度
+const matShell = new THREE.MeshStandardMaterial({
+  color: DBG ? 0xff00ff : 0x9aa0a5, roughness: 0.48, metalness: 0.46,
+  side: THREE.DoubleSide,
+  polygonOffset: true, polygonOffsetFactor: -8, polygonOffsetUnits: -8,
+});
+
+// ---------- 5. 组装 ----------
+const cellsRaw = sampleGrid(CW, CH, CY, COLS, ROWS);
+const cellsRef = refineCells(cellsRaw, COLS, ROWS);
+const cells = fitArc(cellsRef, COLS, ROWS);
+const built = buildShell(cells, COLS, ROWS, THICK);
+
+const place = (g, mat) => {
+  let m;
+  if (MODE === 'skin') {
+    m = new THREE.SkinnedMesh(g, mat);
+    m.bind(mesh.skeleton, mesh.bindMatrix);
+    m.position.copy(mesh.position); m.quaternion.copy(mesh.quaternion); m.scale.copy(mesh.scale);
+    mesh.parent.add(m);
+  } else {
+    const invChest = new THREE.Matrix4().copy(chest.matrixWorld).invert();
+    g.applyMatrix4(invChest);
+    m = new THREE.Mesh(g, mat);
+    chest.add(m);
+  }
+  m.frustumCulled = false;
+  return m;
+};
+
+const mShell = place(built.shellGeo, matShell);
+const mFace = place(built.faceGeo, matFace);
+if (THICK <= 0) { mShell.visible = false; }
+
+// ---------- 6. 动作 ----------
+const animName = QS.get('anim');
+if (animName) {
+  const clip = gltf.animations.find(c => c.name.toLowerCase() === animName.toLowerCase());
+  if (clip) {
+    const mixer = new THREE.AnimationMixer(root);
+    mixer.clipAction(clip).play();
+    const t = Number(QS.get('at') ?? '0.45') * clip.duration;
+    mixer.setTime(t);
+    root.updateMatrixWorld(true);
+    mesh.skeleton.update();
+    window.__anim = { clip: clip.name, time: +t.toFixed(3) };
+  } else {
+    window.__anim = { error: 'clip missing', have: gltf.animations.map(c => c.name) };
+  }
+}
+
+// ---------- 7. 相机与出图 ----------
+const cam = new THREE.PerspectiveCamera(32, (W / 2) / (H / 2), 0.01, 100);
+const box = new THREE.Box3().setFromObject(root);
+const ctr = new THREE.Vector3(); box.getCenter(ctr);
+
+function orbit(t, radius, rotY, height) {
+  cam.position.set(t.x + Math.sin(rotY) * radius, t.y + height, t.z + Math.cos(rotY) * radius);
+  cam.lookAt(t);
+}
+
+const chestW2 = new THREE.Vector3(); chest.getWorldPosition(chestW2);
+const dist = Number(QS.get('dist') ?? '0.62');
+
+const camDefs = [
+  { name: '全身 · 正面', close: false, rot: 0.0 },
+  { name: '全身 · 3/4', close: false, rot: -0.7 },
+  { name: '胸甲特写 · 正面', close: true, rot: 0.0 },
+  { name: '胸甲特写 · 侧 60°', close: true, rot: -1.05 },
+];
+
+const shots = [];
+for (const def of camDefs) {
+  if (def.close) orbit(new THREE.Vector3(chestW2.x, chestW2.y + 0.02, chestW2.z), dist, def.rot, 0.03);
+  else orbit(ctr, 3.1, def.rot, 0.3);
+  renderer.render(scene, cam);
+  shots.push({ name: def.name, url: renderer.domElement.toDataURL('image/png') });
+}
+
+const imgs = await Promise.all(shots.map(s => new Promise(res => {
+  const im = new Image(); im.onload = () => res(im); im.src = s.url;
+})));
+const cv = document.createElement('canvas');
+cv.width = W; cv.height = H;
+const ctx = cv.getContext('2d');
+ctx.fillStyle = '#15171b'; ctx.fillRect(0, 0, W, H);
+imgs.forEach((im, i) => {
+  const x = (i % 2) * (W / 2), y = Math.floor(i / 2) * (H / 2);
+  ctx.drawImage(im, x, y, W / 2, H / 2);
+  ctx.fillStyle = 'rgba(0,0,0,.62)'; ctx.fillRect(x + 8, y + 8, 210, 24);
+  ctx.fillStyle = '#fff'; ctx.font = '13px system-ui';
+  ctx.fillText(shots[i].name, x + 16, y + 25);
+});
+window.__png = cv.toDataURL('image/png');
+window.__build = 'V6-THICK';
+window.__report = {
+  mode: MODE, thick: THICK, size: [CW, CH], yd: CY,
+  sampled: cellsRaw.filter(Boolean).length, total: COLS * ROWS,
+  dropped: cellsRef.dropped || 0, eroded: cellsRef.eroded || 0,
+  kept: cells.filter(Boolean).length,
+  sagittaMm: cells.sagitta ? +(cells.sagitta * 1000).toFixed(2) : null,
+  liftMm: cells.lift ? +(cells.lift * 1000).toFixed(2) : null,
+  quads: built.quads, wallSegs: built.wallSegs,
+  anim: window.__anim || null,
+};
+stat.textContent = `完成 · 厚度 ${(THICK * 1000).toFixed(0)}mm · 拟合半径 ${cells.R ? cells.R.toFixed(3) : 'n/a'}m`;
+</script>
+</body>
+</html>

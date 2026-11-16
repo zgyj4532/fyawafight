@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>纹章模块 · 独立调用验证</title>
+<style>
+  html,body{margin:0;height:100%;background:#15171b;font-family:system-ui,"Microsoft YaHei",sans-serif;color:#d9dee7}
+  #hud{position:fixed;left:14px;top:12px;font-size:13px;line-height:1.65;z-index:2}
+</style>
+</head>
+<body>
+<div id="hud"><span id="stat">加载中…</span></div>
+<script type="importmap">
+{ "imports": {
+  "three": "https://unpkg.com/three@0.168.0/build/three.module.js",
+  "three/addons/": "https://unpkg.com/three@0.168.0/examples/jsm/"
+} }
+</script>
+<script type="module">
+// 这个页面不复制任何纹章逻辑，只调用 js/emblem.js。
+// 它跑通，就等于游戏里加一行 attachEmblem() 能跑通。
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
+import { attachEmblem } from '../js/emblem.js';
+
+const QS = new URLSearchParams(location.search);
+const stat = document.getElementById('stat');
+const W = 1280, H = 800;
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+renderer.setSize(W, H);
+renderer.setPixelRatio(1);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x15171b);
+scene.add(new THREE.HemisphereLight(0xd3dbe6, 0x4a4234, 2.2));
+const d1 = new THREE.DirectionalLight(0xffffff, 2.4); d1.position.set(2.2, 4.5, 4); scene.add(d1);
+const d2 = new THREE.DirectionalLight(0xbcd0ff, 1.0); d2.position.set(-3, 2, 2.5); scene.add(d2);
+const d3 = new THREE.DirectionalLight(0xffe6c4, 0.6); d3.position.set(0, 1.5, -4); scene.add(d3);
+
+const draco = new DRACOLoader();
+draco.setDecoderPath('/vendor/draco/');
+const loader = new GLTFLoader();
+loader.setDRACOLoader(draco);
+
+stat.textContent = '加载 Boss 模型…';
+let gltf;
+try {
+  gltf = await loader.loadAsync('/models/rigged_v1/boss_knight_rigged_v1.glb');
+} catch (e) {
+  stat.textContent = '模型加载失败：' + e.message;
+  window.__report = { error: e.message };
+  throw e;
+}
+
+const root = gltf.scene;
+const b0 = new THREE.Box3().setFromObject(root);
+const s0 = new THREE.Vector3(); b0.getSize(s0);
+root.scale.setScalar(1.8 / s0.y);
+root.updateMatrixWorld(true);
+const b1 = new THREE.Box3().setFromObject(root);
+root.position.y -= b1.min.y;
+scene.add(root);
+root.updateMatrixWorld(true);
+
+// ---- 唯一一行接入 ----
+stat.textContent = '生成纹章…';
+const t0 = performance.now();
+const emblem = await attachEmblem(root, {
+  url: '/assets/emblem_knight.png',
+  thickness: Number(QS.get('thick') ?? '0.018'),
+});
+const buildMs = Math.round(performance.now() - t0);
+
+if (!emblem.ok) {
+  window.__report = { ok: false, reason: emblem.reason };
+  stat.textContent = '接入失败：' + emblem.reason;
+  throw new Error(emblem.reason);
+}
+
+// 动作
+const animName = QS.get('anim');
+if (animName) {
+  const clip = gltf.animations.find(c => c.name.toLowerCase() === animName.toLowerCase());
+  if (clip) {
+    const mixer = new THREE.AnimationMixer(root);
+    mixer.clipAction(clip).play();
+    const t = Number(QS.get('at') ?? '0.45') * clip.duration;
+    mixer.setTime(t);
+    root.updateMatrixWorld(true);
+    window.__anim = { clip: clip.name, time: +t.toFixed(3) };
+  }
+}
+
+let chest = null;
+root.traverse(o => { if (!chest && o.isBone && /^chest$/i.test(o.name)) chest = o; });
+const chestW = new THREE.Vector3(); chest.getWorldPosition(chestW);
+
+const cam = new THREE.PerspectiveCamera(32, (W / 2) / (H / 2), 0.01, 100);
+const box = new THREE.Box3().setFromObject(root);
+const ctr = new THREE.Vector3(); box.getCenter(ctr);
+
+function orbit(t, radius, rotY, height) {
+  cam.position.set(t.x + Math.sin(rotY) * radius, t.y + height, t.z + Math.cos(rotY) * radius);
+  cam.lookAt(t);
+}
+
+const dist = Number(QS.get('dist') ?? '0.62');
+const camDefs = [
+  { name: '全身 · 正面', close: false, rot: 0.0 },
+  { name: '全身 · 3/4', close: false, rot: -0.7 },
+  { name: '胸甲特写 · 正面', close: true, rot: 0.0 },
+  { name: '胸甲特写 · 侧 60°', close: true, rot: -1.05 },
+];
+
+const shots = [];
+for (const def of camDefs) {
+  if (def.close) orbit(new THREE.Vector3(chestW.x, chestW.y + 0.02, chestW.z), dist, def.rot, 0.03);
+  else orbit(ctr, 3.1, def.rot, 0.3);
+  renderer.render(scene, cam);
+  shots.push({ name: def.name, url: renderer.domElement.toDataURL('image/png') });
+}
+
+const imgs = await Promise.all(shots.map(s => new Promise(res => {
+  const im = new Image(); im.onload = () => res(im); im.src = s.url;
+})));
+const cv = document.createElement('canvas');
+cv.width = W; cv.height = H;
+const ctx = cv.getContext('2d');
+ctx.fillStyle = '#15171b'; ctx.fillRect(0, 0, W, H);
+imgs.forEach((im, i) => {
+  const x = (i % 2) * (W / 2), y = Math.floor(i / 2) * (H / 2);
+  ctx.drawImage(im, x, y, W / 2, H / 2);
+  ctx.fillStyle = 'rgba(0,0,0,.62)'; ctx.fillRect(x + 8, y + 8, 210, 24);
+  ctx.fillStyle = '#fff'; ctx.font = '13px system-ui';
+  ctx.fillText(shots[i].name, x + 16, y + 25);
+});
+window.__png = cv.toDataURL('image/png');
+window.__build = 'MODULE-V1';
+window.__report = {
+  ok: true,
+  stats: emblem.stats,
+  buildMs,
+  anim: window.__anim || null,
+};
+stat.textContent = `完成 · ${emblem.stats.thicknessMm}mm · ${buildMs}ms`;
+</script>
+</body>
+</html>

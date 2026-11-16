@@ -1,0 +1,9 @@
+# 本地检查点只跟踪源码。这些目录留在磁盘上，不进历史。
+models/
+generated-images/
+settingimg/
+docs/shots/
+.workbuddy/
+*.blend
+__pycache__/
+*.pyc

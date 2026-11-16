@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { margin: 0; background: #000; }
+  canvas { display: block; }
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://unpkg.com/three@0.168.0/build/three.module.js",
+  "three/addons/": "https://unpkg.com/three@0.168.0/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<script type="module">
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+
+// 与 js/pipeline.js 完全一致的 8 阶渐变表
+const STEPS = [48,48,52, 74,74,78, 104,104,108, 138,138,142,
+               174,174,178, 206,206,210, 232,232,235, 252,252,255];
+const data = new Uint8Array(STEPS.length / 3 * 4);
+for (let i = 0; i < STEPS.length / 3; i += 1) {
+  data[i*4] = STEPS[i*3]; data[i*4+1] = STEPS[i*3+1];
+  data[i*4+2] = STEPS[i*3+2]; data[i*4+3] = 255;
+}
+const gradient = new THREE.DataTexture(data, STEPS.length / 3, 1);
+gradient.magFilter = THREE.LinearFilter;
+gradient.minFilter = THREE.LinearFilter;
+gradient.colorSpace = THREE.NoColorSpace;
+gradient.needsUpdate = true;
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(1600, 900);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.shadowMap.enabled = false;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x7fa04a);
+
+// 与 render.js 同参数
+scene.add(new THREE.AmbientLight(0xd2dae4, 0.78));
+const sun = new THREE.DirectionalLight(0xfff4e6, 1.55);
+sun.position.set(-8, 18, 6);
+scene.add(sun);
+
+// 地面：草色，提供一个和游戏一致的背景亮度
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(60, 60),
+  new THREE.MeshToonMaterial({ color: 0x6f9b3c, gradientMap: gradient }),
+);
+ground.rotation.x = -Math.PI / 2;
+scene.add(ground);
+
+const camera = new THREE.PerspectiveCamera(45, 1600 / 900, 0.1, 200);
+camera.position.set(0, 16, 10);      // 高 16 m、俯角 58°
+camera.lookAt(0, 0, 0);
+
+// ---------- 右：程序化木箱（复制 js/props.js 的 crate 实现）----------
+const WOOD = 0x7d5834;
+const WOOD_LIGHT = 0x9c7442;
+
+function boxGeo(w, h, d, hex, o = {}) {
+  const g = new THREE.BoxGeometry(w, h, d);
+  const c = new THREE.Color(hex);
+  const arr = new Float32Array(g.attributes.position.count * 3);
+  for (let i = 0; i < g.attributes.position.count; i += 1) {
+    arr[i*3] = c.r; arr[i*3+1] = c.g; arr[i*3+2] = c.b;
+  }
+  g.setAttribute('color', new THREE.BufferAttribute(arr, 3));
+  g.deleteAttribute('uv');
+  g.deleteAttribute('normal');
+  g.computeVertexNormals();
+  const m = new THREE.Matrix4();
+  const e = new THREE.Euler(o.rx || 0, o.ry || 0, o.rz || 0);
+  m.makeRotationFromEuler(e);
+  m.setPosition(o.x || 0, o.y || 0, o.z || 0);
+  g.applyMatrix4(m);
+  return g;
+}
+
+const procParts = [];
+procParts.push(boxGeo(0.62, 0.55, 0.62, WOOD, { y: 0.275 }));
+procParts.push(boxGeo(0.66, 0.06, 0.66, WOOD_LIGHT, { y: 0.55 }));
+// 两道铁箍
+procParts.push(boxGeo(0.64, 0.05, 0.64, 0x4a4a4a, { y: 0.15 }));
+procParts.push(boxGeo(0.64, 0.05, 0.64, 0x4a4a4a, { y: 0.42 }));
+
+// 手工合并（避免引 mergeGeometries 依赖）
+function mergeGeos(geos) {
+  let total = 0;
+  geos.forEach((g) => { total += g.attributes.position.count; });
+  const pos = new Float32Array(total * 3);
+  const nor = new Float32Array(total * 3);
+  const col = new Float32Array(total * 3);
+  const idx = [];
+  let vOff = 0;
+  geos.forEach((g) => {
+    pos.set(g.attributes.position.array, vOff * 3);
+    nor.set(g.attributes.normal.array, vOff * 3);
+    col.set(g.attributes.color.array, vOff * 3);
+    const gi = g.index ? g.index.array : null;
+    if (gi) for (let i = 0; i < gi.length; i += 1) idx.push(gi[i] + vOff);
+    else for (let i = 0; i < g.attributes.position.count; i += 1) idx.push(i + vOff);
+    vOff += g.attributes.position.count;
+  });
+  const out = new THREE.BufferGeometry();
+  out.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  out.setAttribute('normal', new THREE.BufferAttribute(nor, 3));
+  out.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  out.setIndex(idx);
+  return out;
+}
+
+const procMesh = new THREE.Mesh(
+  mergeGeos(procParts),
+  new THREE.MeshToonMaterial({ vertexColors: true, gradientMap: gradient }),
+);
+procMesh.position.set(2.7, 0, 0);
+scene.add(procMesh);
+
+// ---------- 左：Lux3D 生成的 chest.glb ----------
+const loader = new GLTFLoader();
+const gltf = await loader.loadAsync('../models/enemies/chest.glb');
+const lux = gltf.scene;
+
+// 与 pipeline.js 的 convertToToon 一致：只保留 map，丢弃 normal/roughness
+lux.traverse((o) => {
+  if (!o.isMesh) return;
+  const mats = Array.isArray(o.material) ? o.material : [o.material];
+  o.material = mats.map((m) => {
+    const map = m.map || null;
+    if (map) map.colorSpace = THREE.SRGBColorSpace;
+    return new THREE.MeshToonMaterial({
+      color: m.color ? m.color.clone() : new THREE.Color(0xffffff),
+      map,
+      gradientMap: gradient,
+    });
+  });
+  if (o.material.length === 1) o.material = o.material[0];
+});
+
+// 缩放到和程序化木箱同一外廓（0.62 m 宽）
+const bb = new THREE.Box3().setFromObject(lux);
+const size = new THREE.Vector3();
+bb.getSize(size);
+const k = 0.62 / Math.max(size.x, size.z);
+lux.scale.setScalar(k);
+lux.position.set(-2.7, -bb.min.y * k, 0);
+scene.add(lux);
+
+// 统计
+let tri = 0, mats = new Set();
+lux.traverse((o) => {
+  if (!o.isMesh) return;
+  const g = o.geometry;
+  tri += (g.index ? g.index.count : g.attributes.position.count) / 3;
+  mats.add(o.material.uuid);
+});
+
+window.__report = {
+  luxTris: Math.round(tri),
+  luxMaterials: mats.size,
+  scaledBy: +k.toFixed(3),
+  procTris: procMesh.geometry.index.count / 3,
+};
+
+renderer.render(scene, camera);
+window.__ready = true;
+</script>
+</body>
+</html>

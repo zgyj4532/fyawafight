@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>body { margin: 0; background: #000; } canvas { display: block; }</style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://unpkg.com/three@0.168.0/build/three.module.js",
+  "three/addons/": "https://unpkg.com/three@0.168.0/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<script type="module">
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+
+// 8 阶渐变表，与 js/pipeline.js 完全一致
+const STEPS = [48,48,52, 74,74,78, 104,104,108, 138,138,142,
+               174,174,178, 206,206,210, 232,232,235, 252,252,255];
+const data = new Uint8Array(STEPS.length / 3 * 4);
+for (let i = 0; i < STEPS.length / 3; i += 1) {
+  data[i*4] = STEPS[i*3]; data[i*4+1] = STEPS[i*3+1];
+  data[i*4+2] = STEPS[i*3+2]; data[i*4+3] = 255;
+}
+const gradient = new THREE.DataTexture(data, STEPS.length / 3, 1);
+gradient.magFilter = THREE.LinearFilter;
+gradient.minFilter = THREE.LinearFilter;
+gradient.colorSpace = THREE.NoColorSpace;
+gradient.needsUpdate = true;
+
+// 视口与游戏一致：1600×900
+const W = 1600, H = 900;
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(W, H);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x7fa04a);
+
+// 与 render.js 同参数
+scene.add(new THREE.AmbientLight(0xd2dae4, 0.78));
+const sun = new THREE.DirectionalLight(0xfff4e6, 1.55);
+sun.position.set(-8, 18, 6);
+scene.add(sun);
+
+// 地面用草色，只为提供一致的环境亮度
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(120, 120),
+  new THREE.MeshToonMaterial({ color: 0x6f9b3c, gradientMap: gradient }),
+);
+ground.rotation.x = -Math.PI / 2;
+scene.add(ground);
+
+// 游戏相机：高 16 m、在玩家身后 10 m、看向玩家脚上方 0.9 m
+const camera = new THREE.PerspectiveCamera(45, W / H, 0.1, 300);
+camera.position.set(0, 16, 10);
+camera.lookAt(0, 0.9, 0);
+
+const q = new URLSearchParams(location.search);
+const file = q.get('file') || 'hill_ridge.opt.glb';
+const fileB = q.get('fileB') || '';                   // 给了就做同距离左右 A/B
+const targetLen = parseFloat(q.get('len') || '8');    // 期望的最长水平边（米）
+const useHeight = parseFloat(q.get('height') || '0'); // >0 时按高度对齐
+const yawDeg = parseFloat(q.get('yaw') || '0');      // 整体绕 Y 旋转，用来看端面/背面
+
+const loader = new GLTFLoader();
+const gltf = await loader.loadAsync(`../models/env-run/body/${file}`);
+
+// 与 pipeline.js 的 convertToToon 一致：只保留 map
+function toToon(root) {
+  root.traverse((o) => {
+    if (!o.isMesh) return;
+    const mats = Array.isArray(o.material) ? o.material : [o.material];
+    const next = mats.map((m) => {
+      const map = m.map || null;
+      if (map) map.colorSpace = THREE.SRGBColorSpace;
+      return new THREE.MeshToonMaterial({
+        color: m.color ? m.color.clone() : new THREE.Color(0xffffff),
+        map,
+        gradientMap: gradient,
+      });
+    });
+    o.material = next.length === 1 ? next[0] : next;
+  });
+}
+
+const bb0 = new THREE.Box3().setFromObject(gltf.scene);
+const size0 = new THREE.Vector3();
+bb0.getSize(size0);
+const k0 = useHeight > 0 ? useHeight / size0.y : targetLen / Math.max(size0.x, size0.z);
+
+// 放两处：近处 5 m、远处 14 m（相对玩家），都可落在视野内。
+// 给了 fileB 就在同一深度左右各放一个，做真正的同条件对照。
+const spots = fileB
+  ? [{ x: -5, z: -4 }, { x: 5, z: -4 }]
+  : [{ x: 0, z: -3 }, { x: 0, z: -13 }];
+
+const sources = fileB
+  ? [gltf.scene, (await loader.loadAsync(`../models/env-run/body/${fileB}`)).scene]
+  : [gltf.scene, gltf.scene];
+
+const placed = [];
+const sizes = [];
+sources.forEach((src, i) => {
+  // 每个模型按自己的包围盒独立对齐到目标长度，两个才真正可比
+  const bsrc = new THREE.Box3().setFromObject(src);
+  const sz = new THREE.Vector3();
+  bsrc.getSize(sz);
+  const k = useHeight > 0 ? useHeight / sz.y : targetLen / Math.max(sz.x, sz.z);
+
+  const inst = src.clone(true);
+  toToon(inst);
+  inst.scale.setScalar(k);
+  inst.rotation.y = (yawDeg * Math.PI) / 180;
+  const b = new THREE.Box3().setFromObject(inst);
+  inst.position.set(spots[i].x, -b.min.y, spots[i].z);
+  scene.add(inst);
+  placed.push(inst);
+  sizes.push({ native: [sz.x, sz.y, sz.z].map((v) => +v.toFixed(2)),
+               k: +k.toFixed(2),
+               final: [sz.x * k, sz.y * k, sz.z * k].map((v) => +v.toFixed(2)) });
+});
+
+const report = {
+  file,
+  fileB: fileB || null,
+  targetLen,
+  models: sizes,
+  spots: spots.map((s) => s.z),
+};
+window.__report = report;
+
+renderer.render(scene, camera);
+window.__ready = true;
+</script>
+</body>
+</html>

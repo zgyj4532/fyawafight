@@ -1,0 +1,341 @@
+:root {
+  color: #f4f7fb;
+  font-family: "Segoe UI", sans-serif;
+  --hp: #e8455c;
+  --hp-bg: #1b1f2a;
+  --xp: #1e9be8;
+  --gold: #f5b63c;
+  --ok: #3fd68a;
+  --ink: #071018;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background: var(--ink);
+  overflow: hidden;
+  touch-action: none;
+  user-select: none;
+}
+
+#view {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+#hud {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+}
+
+#hud button { pointer-events: auto; }
+
+.bar {
+  position: absolute;
+  top: 16px;
+  left: 16px;
+  width: 220px;
+}
+
+.bar-track {
+  height: 14px;
+  background: var(--hp-bg);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+#hp-fill, #xp-fill, #boss-fill {
+  height: 100%;
+  width: 100%;
+  transform-origin: left center;
+}
+
+#hp-fill { background: var(--hp); }
+#xp-fill { background: var(--xp); }
+
+.xp {
+  margin-top: 6px;
+}
+
+.xp .bar-track { height: 6px; }
+
+#level {
+  margin-top: 4px;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+}
+
+#timer {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-family: ui-monospace, monospace;
+  font-size: 28px;
+  color: #fff;
+  -webkit-text-stroke: 1px #10233f;
+}
+
+#timer.boss-soon { animation: boss-blink 0.45s steps(2) infinite; }
+
+@keyframes boss-blink {
+  50% { opacity: 0.25; }
+}
+
+#kills {
+  position: absolute;
+  top: 18px;
+  right: 16px;
+  font-size: 28px;
+}
+
+#boss-bar {
+  position: absolute;
+  top: 56px;
+  left: 20%;
+  width: 60%;
+}
+
+#boss-bar .bar-track { height: 16px; }
+#boss-fill { background: var(--hp); }
+
+#boss-name {
+  margin-bottom: 4px;
+  text-align: center;
+  font-size: 14px;
+}
+
+#joystick {
+  position: absolute;
+  width: 120px;
+  height: 120px;
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  border-radius: 50%;
+  background: rgba(7, 16, 24, 0.35);
+  pointer-events: none;
+}
+
+#stick {
+  position: absolute;
+  left: 36px;
+  top: 36px;
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.55);
+}
+
+#pad-hint {
+  position: absolute;
+  right: 16px;
+  bottom: 16px;
+  font-size: 13px;
+  opacity: 0.85;
+}
+
+#chest-arrows { position: absolute; inset: 0; }
+
+#levelup, #result {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: rgba(7, 16, 24, 0.55);
+  pointer-events: auto;
+}
+
+#levelup[hidden], #result[hidden], #boss-bar[hidden],
+#joystick[hidden], #pad-hint[hidden], #pause[hidden], #boot-note[hidden],
+#menu[hidden], #howto[hidden] { display: none; }
+
+#hud:not(.in-play) .bar,
+#hud:not(.in-play) #timer,
+#hud:not(.in-play) #kills,
+#hud:not(.in-play) #boss-bar,
+#hud:not(.in-play) #chest-arrows,
+#hud:not(.in-play) #pause,
+#hud:not(.in-play) #levelup,
+#hud:not(.in-play) #result,
+#hud:not(.in-play) #joystick,
+#hud:not(.in-play) #pad-hint { display: none; }
+
+#menu {
+  position: fixed;
+  inset: 0;
+  z-index: 4;
+  pointer-events: none;
+  background: #f9fbfd;
+}
+
+#cover {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  object-position: center 42%;
+  pointer-events: none;
+}
+
+#menu-copy {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 48px 16px 22px;
+  background: linear-gradient(to top, rgba(249, 251, 253, 0.96) 42%, rgba(249, 251, 253, 0));
+}
+
+#menu-title {
+  margin: 0;
+  font-size: clamp(28px, 4vw, 48px);
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0.04em;
+  text-align: center;
+  color: #10233f;
+}
+
+.menu-actions {
+  display: flex;
+  gap: 16px;
+  pointer-events: auto;
+}
+
+#menu .menu-btn {
+  color: #10233f;
+  background: rgba(255, 255, 255, 0.92);
+}
+
+#menu .menu-btn.primary {
+  background: var(--xp);
+  color: var(--ink);
+}
+
+.menu-btn {
+  min-width: 168px;
+  height: 48px;
+  padding: 0 18px;
+  border: 2px solid var(--xp);
+  background: transparent;
+  color: #f4f7fb;
+  font: inherit;
+  font-size: 18px;
+  letter-spacing: 0.12em;
+  cursor: pointer;
+}
+
+.menu-btn.primary {
+  background: var(--xp);
+  color: var(--ink);
+}
+
+.menu-btn:hover { filter: brightness(1.08); }
+
+.menu-btn:focus-visible {
+  outline: 2px solid #fff;
+  outline-offset: 3px;
+}
+
+#howto {
+  position: fixed;
+  inset: 0;
+  z-index: 6;
+  display: grid;
+  place-items: center;
+  background: rgba(7, 16, 24, 0.5);
+}
+
+.howto-panel {
+  width: min(520px, calc(100% - 32px));
+  padding: 28px 28px 22px;
+  background: var(--hp-bg);
+  border: 2px solid rgba(30, 155, 232, 0.75);
+}
+
+.howto-panel h2 {
+  margin: 0;
+  text-align: center;
+  font-size: 22px;
+  letter-spacing: 0.16em;
+}
+
+.howto-panel p {
+  margin: 14px 0 0;
+  line-height: 1.5;
+}
+
+.howto-panel ul {
+  margin: 12px 0 22px;
+  padding-left: 1.2em;
+  line-height: 1.6;
+}
+
+.howto-panel .menu-btn { display: block; margin: 0 auto; }
+
+@media (max-width: 640px) {
+  .menu-actions { flex-direction: column; align-items: center; }
+  .menu-btn { width: min(240px, 100%); }
+}
+
+#pause {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: rgba(7, 16, 24, 0.4);
+  font-size: 42px;
+  letter-spacing: 0.2em;
+}
+
+#boot-note {
+  position: absolute;
+  left: 16px;
+  bottom: 16px;
+  max-width: 440px;
+  padding: 10px 12px;
+  background: rgba(7, 16, 24, 0.86);
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+#cards {
+  display: flex;
+  gap: 12px;
+}
+
+.card {
+  width: 180px;
+  min-height: 120px;
+  padding: 12px;
+  background: var(--hp-bg);
+  border: 2px solid transparent;
+  color: inherit;
+}
+
+.card.selected { border-color: var(--xp); }
+
+#result-panel {
+  width: min(360px, calc(100% - 32px));
+  padding: 20px;
+  background: var(--hp-bg);
+  text-align: center;
+}
+
+#retry {
+  margin-top: 16px;
+  padding: 8px 16px;
+  border: 0;
+  background: var(--xp);
+  color: var(--ink);
+}
