@@ -50,7 +50,7 @@ html, body {
   overflow: hidden;
 }
 
-#hp-fill, #xp-fill, #boss-fill {
+#hp-fill, #xp-fill {
   height: 100%;
   width: 100%;
   transform-origin: left center;
@@ -102,8 +102,9 @@ html, body {
   width: 60%;
 }
 
-#boss-bar .bar-track { height: 16px; }
-#boss-fill { background: var(--hp); }
+#boss-segments { display: flex; gap: 3px; }
+.boss-seg { flex: 1; height: 16px; background: var(--hp-bg); overflow: hidden; }
+.boss-seg i { display: block; height: 100%; background: var(--hp); transform-origin: left center; transform: scaleX(1); }
 
 #boss-name {
   margin-bottom: 4px;
@@ -152,7 +153,8 @@ html, body {
 
 #levelup[hidden], #result[hidden], #boss-bar[hidden],
 #joystick[hidden], #pad-hint[hidden], #pause[hidden], #boot-note[hidden],
-#menu[hidden], #howto[hidden] { display: none; }
+#menu[hidden], #howto[hidden], #doc[hidden], #doc-hint[hidden],
+.settings-body[hidden] { display: none; }
 
 #hud:not(.in-play) .bar,
 #hud:not(.in-play) #timer,
@@ -296,6 +298,20 @@ html, body {
   background: rgba(7, 16, 24, 0.4);
   font-size: 42px;
   letter-spacing: 0.2em;
+  pointer-events: none;
+}
+
+.pause-sheet { text-align: center; }
+.pause-sheet p { margin: 0 0 18px; }
+#btn-pause-settings {
+  font: inherit;
+  font-size: 18px;
+  letter-spacing: 0.12em;
+  padding: 8px 18px;
+  border: 2px solid var(--xp);
+  background: var(--hp-bg);
+  color: inherit;
+  pointer-events: auto;
 }
 
 #boot-note {
@@ -396,8 +412,13 @@ html, body {
 
 #settings[hidden] { display: none; }
 
-.settings-tabs, .settings-body { display: flex; gap: 8px; }
-.settings-body { flex-direction: column; margin: 16px 0; }
+.settings-layout { display: flex; gap: 18px; align-items: flex-start; }
+.settings-tabs { display: flex; flex-direction: column; gap: 8px; min-width: 88px; }
+.settings-main { flex: 1; min-width: 0; }
+.settings-body { display: flex; flex-direction: column; gap: 12px; margin: 0 0 8px; }
+.slider-row { display: flex; align-items: center; gap: 10px; }
+.slider-row span:first-child { width: 48px; }
+.slider-row input { flex: 1; }
 .settings-tabs button, #sweep-on, #sweep-off {
   min-height: 40px;
   padding: 0 12px;
@@ -407,7 +428,7 @@ html, body {
   font: inherit;
 }
 .settings-tabs button.selected, #sweep-on.selected, #sweep-off.selected { border-color: var(--xp); }
-.pad-col.off { opacity: 0.35; }
+.pad-col.off { opacity: 0.35; pointer-events: none; }
 .key-table { width: 100%; border-collapse: collapse; }
 .key-table td, .key-table th { text-align: left; padding: 6px 4px; }
 .key-table small { display: block; opacity: 0.7; }

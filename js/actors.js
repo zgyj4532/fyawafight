@@ -2,7 +2,7 @@
 // 史莱姆、子弹、宝石各用一个批次。
 
 import * as THREE from 'three';
-import { SkeletonUtils } from 'three/addons/utils/SkeletonUtils.js';
+import { clone as cloneSkeleton } from 'three/addons/utils/SkeletonUtils.js';
 import { CONFIG } from './config.js';
 import { terrainY } from './path.js';
 import { createBossView } from './bossview.js';
@@ -22,12 +22,45 @@ const CLIPS = {
 const dummy = new THREE.Object3D();
 const color = new THREE.Color();
 
-function firstGeometry(root) {
+function largestGeometry(root) {
   let geo = null;
+  let best = 0;
+  let skinned = null;
+  let skinnedBest = 0;
   root.traverse((obj) => {
-    if (!geo && obj.isMesh && obj.geometry) geo = obj.geometry;
+    const count = obj.isMesh && obj.geometry && obj.geometry.attributes.position
+      ? obj.geometry.attributes.position.count
+      : 0;
+    if (count > best) {
+      best = count;
+      geo = obj.geometry;
+    }
+    if (obj.isSkinnedMesh && count > skinnedBest) {
+      skinnedBest = count;
+      skinned = obj.geometry;
+    }
   });
-  return geo;
+  return skinned || geo;
+}
+
+function sourceMap(root, geo) {
+  let map = null;
+  root.traverse((obj) => {
+    if (obj.isMesh && obj.geometry === geo && obj.material && obj.material.map) map = obj.material.map;
+  });
+  return map;
+}
+
+function fitGround(geo, height) {
+  geo.computeBoundingBox();
+  const box = geo.boundingBox;
+  const h = box.max.y - box.min.y;
+  geo.translate(
+    -((box.min.x + box.max.x) * 0.5),
+    -box.min.y,
+    -((box.min.z + box.max.z) * 0.5),
+  );
+  return h > 1e-4 ? height / h : 1;
 }
 
 async function loadTemplate(url, legacy) {
@@ -45,7 +78,7 @@ async function loadTemplate(url, legacy) {
 }
 
 function makeRig(template, clips, scene) {
-  const group = SkeletonUtils.clone(template);
+  const group = cloneSkeleton(template);
   const mixer = new THREE.AnimationMixer(group);
   const actions = {};
   Object.entries(CLIPS).forEach(([name, pattern]) => {
@@ -122,8 +155,13 @@ function placePool(pool, enemies, dt) {
 export async function createActors(scene) {
   const gradient = createToonGradientMap();
   const slimeSrc = await loadTemplate(CONFIG.enemies.slime.glb, CONFIG.enemies.slime.legacyGlb);
-  const slimeGeo = slimeSrc ? firstGeometry(slimeSrc.pivot) : new THREE.SphereGeometry(0.45, 12, 8);
-  const slimeMat = new THREE.MeshToonMaterial({ color: 0xffffff, gradientMap: gradient });
+  const slimeGeo = (slimeSrc && largestGeometry(slimeSrc.pivot)) || new THREE.SphereGeometry(0.45, 12, 8);
+  const slimeFit = fitGround(slimeGeo, 1.15);
+  const slimeMat = new THREE.MeshToonMaterial({
+    color: 0xffffff,
+    map: slimeSrc ? sourceMap(slimeSrc.pivot, slimeGeo) : null,
+    gradientMap: gradient,
+  });
   const slimes = new THREE.InstancedMesh(slimeGeo, slimeMat, CONFIG.spawn.maxAlive);
   slimes.count = CONFIG.spawn.maxAlive;
   slimes.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
@@ -193,6 +231,21 @@ export async function createActors(scene) {
   telegraph.visible = false;
   scene.add(telegraph);
 
+  const warnR = CONFIG.chests.types.trap.warnRadius;
+  const trapRing = new THREE.Mesh(
+    new THREE.RingGeometry(Math.max(0.2, warnR - 0.18), warnR, 40),
+    new THREE.MeshBasicMaterial({
+      color: CONFIG.chests.types.trap.color,
+      transparent: true,
+      opacity: 0.9,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    }),
+  );
+  trapRing.rotation.x = -Math.PI / 2;
+  trapRing.visible = false;
+  scene.add(trapRing);
+
   const rings = new THREE.InstancedMesh(
     new THREE.RingGeometry(0.9, 1.05, 20),
     new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.7, side: THREE.DoubleSide }),
@@ -210,6 +263,15 @@ export async function createActors(scene) {
     mesh.setMatrixAt(index, dummy.matrix);
   }
 
+  for (let i = 0; i < slimes.count; i += 1) hideInstance(slimes, i);
+  for (let i = 0; i < bullets.count; i += 1) hideInstance(bullets, i);
+  for (let i = 0; i < gems.count; i += 1) hideInstance(gems, i);
+  for (let i = 0; i < rings.count; i += 1) hideInstance(rings, i);
+  slimes.instanceMatrix.needsUpdate = true;
+  bullets.instanceMatrix.needsUpdate = true;
+  gems.instanceMatrix.needsUpdate = true;
+  rings.instanceMatrix.needsUpdate = true;
+
   return {
     update(state, dt) {
       const step = dt * (state.time.scale || 1);
@@ -224,7 +286,7 @@ export async function createActors(scene) {
         const hop = e.hopT && CONFIG.enemies.slime.hopEvery
           ? Math.sin((e.hopT / CONFIG.enemies.slime.hopEvery) * Math.PI)
           : 0;
-        const s = (e.scale || 1) * (1 + hop * 0.18);
+        const s = slimeFit * (e.scale || 1) * (1 + hop * 0.18);
         dummy.position.set(e.x, terrainY(e.x, e.z), e.z);
         dummy.rotation.set(0, e.facing, 0);
         dummy.scale.set(s, s * (1 + hop * 0.35), s);
@@ -310,6 +372,9 @@ export async function createActors(scene) {
         const pulse = 1 + Math.sin(state.time.elapsed * (6.28 / (type.pulse || 1.4))) * 0.06;
         mesh.scale.setScalar(pulse);
       }
+      const trap = state.chests.find((chest) => chest.alive && chest.opening && chest.type === 'trap');
+      trapRing.visible = !!trap;
+      if (trap) trapRing.position.set(trap.x, terrainY(trap.x, trap.z) + 0.08, trap.z);
 
       let ring = 0;
       for (let i = 0; i < enemies.length && ring < 16; i += 1) {

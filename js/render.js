@@ -52,17 +52,20 @@ function dom() {
   hud.resultPanel = document.getElementById('result-panel');
   hud.retry = document.getElementById('retry');
   hud.bossBar = document.getElementById('boss-bar');
-  hud.bossFill = document.getElementById('boss-fill');
+  hud.bossSegs = Array.from(document.querySelectorAll('#boss-segments i'));
   hud.bossName = document.getElementById('boss-name');
+  hud.pauseSettings = document.getElementById('btn-pause-settings');
   hud.doc = document.getElementById('doc');
   hud.docHint = document.getElementById('doc-hint');
   hud.docKey = document.getElementById('doc-key');
   hud.settings = document.getElementById('settings');
   hud.settingsOpen = document.getElementById('btn-settings');
   hud.settingsBack = document.getElementById('btn-settings-back');
-  hud.padNote = document.getElementById('pad-col-note');
+  hud.padHead = document.getElementById('pad-head');
   hud.vol = document.getElementById('vol');
   hud.sfx = document.getElementById('sfx');
+  hud.volPct = document.getElementById('vol-pct');
+  hud.sfxPct = document.getElementById('sfx-pct');
   hud.arrows = document.getElementById('chest-arrows');
   return hud;
 }
@@ -91,6 +94,11 @@ function bindMenu(state) {
       state.ui.settings = true;
     });
   }
+  if (nodes.pauseSettings) {
+    nodes.pauseSettings.addEventListener('click', () => {
+      state.ui.settings = true;
+    });
+  }
   if (nodes.settingsBack) {
     nodes.settingsBack.addEventListener('click', () => {
       state.ui.settings = false;
@@ -101,15 +109,21 @@ function bindMenu(state) {
       state.ui.tab = button.dataset.tab;
     });
   });
+  function previewSound() {
+    if (nodes.volPct) nodes.volPct.textContent = `${nodes.vol.value}%`;
+    if (nodes.sfxPct) nodes.sfxPct.textContent = `${nodes.sfx.value}%`;
+    if (state.view) state.view.synth.play('shoot', state.settings.volume * state.settings.sfx);
+  }
   if (nodes.vol) {
     nodes.vol.addEventListener('input', () => {
       state.settings.volume = Number(nodes.vol.value) / 100;
+      previewSound();
     });
   }
   if (nodes.sfx) {
     nodes.sfx.addEventListener('input', () => {
       state.settings.sfx = Number(nodes.sfx.value) / 100;
-      if (state.view) state.view.synth.play('shoot', state.settings.volume * state.settings.sfx);
+      previewSound();
     });
   }
   const sweepOn = document.getElementById('sweep-on');
@@ -768,16 +782,20 @@ function syncBattle(state) {
   const boss = state.enemies[0];
   const showBoss = boss && boss.kind === 'hese' && (boss.alive || state.result.hold > 0);
   if (nodes.bossBar) nodes.bossBar.hidden = !showBoss;
-  if (showBoss && nodes.bossFill) {
+  if (showBoss && nodes.bossSegs) {
     const ratio = boss.hpMax > 0 ? Math.max(0, boss.hp / boss.hpMax) : 0;
-    nodes.bossFill.style.transform = `scaleX(${ratio})`;
+    const parts = CONFIG.boss.hpSegments || nodes.bossSegs.length;
+    nodes.bossSegs.forEach((seg, i) => {
+      const local = Math.max(0, Math.min(1, ratio * parts - i));
+      seg.style.transform = `scaleX(${local})`;
+    });
     if (nodes.bossName) nodes.bossName.textContent = CONFIG.boss.name;
   }
 
   if (nodes.docHint) {
     const showHint = state.phase === 'play' && state.doc.nearId && !state.doc.open;
     nodes.docHint.hidden = !showHint;
-    if (showHint) nodes.docHint.textContent = padHint ? '查看文书 · A' : '查看文书 · E';
+    if (showHint) nodes.docHint.textContent = padHint ? '查看文书，A' : '查看文书，E';
   }
   if (nodes.doc) nodes.doc.hidden = !state.doc.open;
   if (nodes.docKey) nodes.docKey.textContent = padHint ? '再按 A 或 Esc 关闭' : '再按 E 或 Esc 关闭';
@@ -813,11 +831,10 @@ function syncBattle(state) {
   document.querySelectorAll('#settings [data-tab]').forEach((button) => {
     button.classList.toggle('selected', button.dataset.tab === state.ui.tab);
   });
-  if (nodes.padNote) {
-    nodes.padNote.textContent = input.padConnected ? '手柄已连接' : '手柄未连接';
-  }
-  const padCol = document.querySelector('#settings .pad-col');
-  if (padCol) padCol.classList.toggle('off', !input.padConnected);
+  if (nodes.padHead) nodes.padHead.textContent = input.padConnected ? '手柄' : '手柄未连接';
+  document.querySelectorAll('#settings .pad-col').forEach((cell) => {
+    cell.classList.toggle('off', !input.padConnected);
+  });
   document.getElementById('sweep-on')?.classList.toggle('selected', state.settings.sweep);
   document.getElementById('sweep-off')?.classList.toggle('selected', !state.settings.sweep);
 }
@@ -839,7 +856,8 @@ export function updateRenderAndHUD(state, dt) {
     }
     while (state.fx.queue.length) state.view.synth.play(state.fx.queue.shift(), vol);
     if (state.phase === 'play' && state.input.pauseEdge && !state.doc.open) {
-      state.time.paused = !state.time.paused;
+      if (state.ui.settings) state.ui.settings = false;
+      else state.time.paused = !state.time.paused;
     }
     syncHero(state, dt);
     syncBorderFX(state);

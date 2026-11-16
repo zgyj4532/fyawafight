@@ -56,12 +56,22 @@
     <div id="kills">0</div>
     <div id="boss-bar" hidden>
       <div id="boss-name">赫塞重甲骑士</div>
-      <div class="bar-track"><div id="boss-fill"></div></div>
+      <div id="boss-segments">
+        <div class="boss-seg"><i></i></div>
+        <div class="boss-seg"><i></i></div>
+        <div class="boss-seg"><i></i></div>
+        <div class="boss-seg"><i></i></div>
+      </div>
     </div>
     <div id="chest-arrows"></div>
     <div id="joystick" hidden><div id="stick"></div></div>
     <div id="pad-hint" hidden>摇杆移动 · A 闪避 · Start 暂停</div>
-    <div id="pause" hidden>暂停</div>
+    <div id="pause" hidden>
+      <div class="pause-sheet">
+        <p>暂停</p>
+        <button id="btn-pause-settings" type="button">设置</button>
+      </div>
+    </div>
     <div id="boot-note" hidden></div>
     <div id="levelup" hidden>
       <div id="cards">
@@ -81,8 +91,7 @@
     <div id="doc-hint" hidden></div>
     <div id="doc" hidden>
       <div class="doc-panel">
-        <h2>封缄文书</h2>
-        <p>沿路村镇即日起封锁。兽类由本团饲养，不得私放，不得外传。</p>
+        <h2>命令文书</h2>
         <p>署名：团长</p>
         <p id="doc-key"></p>
       </div>
@@ -90,18 +99,20 @@
   </div>
   <div id="settings" hidden>
     <div class="settings-panel">
+      <div class="settings-layout">
       <div class="settings-tabs">
         <button type="button" data-tab="sound">声音</button>
         <button type="button" data-tab="keys">操作</button>
         <button type="button" data-tab="view">画面</button>
       </div>
+      <div class="settings-main">
       <div class="settings-body" data-pane="sound">
-        <label>总音量 <input id="vol" type="range" min="0" max="100" value="80"></label>
-        <label>音效 <input id="sfx" type="range" min="0" max="100" value="100"></label>
+        <label class="slider-row"><span id="vol-pct">80%</span><span>总音量</span><input id="vol" type="range" min="0" max="100" value="80"></label>
+        <label class="slider-row"><span id="sfx-pct">100%</span><span>音效</span><input id="sfx" type="range" min="0" max="100" value="100"></label>
       </div>
       <div class="settings-body" data-pane="keys" hidden>
         <table class="key-table">
-          <tr><th>动作</th><th>键盘</th><th class="pad-col">手柄</th></tr>
+          <tr><th>动作</th><th>键盘</th><th id="pad-head" class="pad-col">手柄未连接</th></tr>
           <tr><td>移动</td><td>WASD</td><td class="pad-col">左摇杆</td></tr>
           <tr><td>慢走</td><td>按住 Shift</td><td class="pad-col">摇杆轻轻推</td></tr>
           <tr><td>翻滚</td><td>空格</td><td class="pad-col">A<small>选卡时改为确定，文书旁改为查看</small></td></tr>
@@ -109,11 +120,12 @@
           <tr><td>升级选择</td><td>1 2 3</td><td class="pad-col">摇杆左右，A 确定</td></tr>
           <tr><td>查看文书</td><td>E</td><td class="pad-col">A</td></tr>
         </table>
-        <p id="pad-col-note"></p>
       </div>
       <div class="settings-body" data-pane="view" hidden>
         <button id="sweep-on" class="menu-btn" type="button">穿门时镜头扫过去</button>
         <button id="sweep-off" class="menu-btn" type="button">直接出现在对面</button>
+      </div>
+      </div>
       </div>
       <button id="btn-settings-back" class="menu-btn primary" type="button">返回</button>
     </div>
