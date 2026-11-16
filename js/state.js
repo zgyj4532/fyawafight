@@ -31,8 +31,12 @@ function enemySlot(id) {
     hopT: 0,
     telegraph: 0,
     dashDirX: 0,
-    dashDirZ: 0,
+    dashDirZ: 1,
     hits: 0,
+    contactCd: 0,
+    dashHit: false,
+    portalCd: 0,
+    recoverNeed: 0,
   };
 }
 
@@ -51,6 +55,13 @@ function chestSlot(id) {
   };
 }
 
+function bulletPool(count) {
+  const pool = typedPool(count);
+  pool.pierce = new Uint8Array(count);
+  pool.hit = new Uint8Array(count * CONFIG.spawn.maxAlive);
+  return pool;
+}
+
 function typedPool(count) {
   return {
     count,
@@ -62,6 +73,11 @@ function typedPool(count) {
     age: new Float32Array(count),
     value: new Float32Array(count),
   };
+}
+
+export function nextUnit(state) {
+  state.rng = (Math.imul(state.rng | 0, 1664525) + 1013904223) >>> 0;
+  return state.rng / 4294967296;
 }
 
 export function createState() {
@@ -113,6 +129,7 @@ export function createState() {
       speedBuffMul: 1,
       // 0…1，土路权重。移动和渲染共用，避免两处各算一遍导致视觉和数值对不上。
       pathBlend: 0,
+      hurtCd: 0,
     },
     input: {
       moveX: 0,
@@ -128,7 +145,7 @@ export function createState() {
       pointer: { active: false, id: -1, x: 0, y: 0, dx: 0, dy: 0 },
     },
     enemies,
-    bullets: typedPool(CONFIG.weapon.pool),
+    bullets: bulletPool(CONFIG.weapon.pool),
     gems: typedPool(CONFIG.gems.pool),
     chests,
     camera: {
@@ -144,7 +161,27 @@ export function createState() {
       toX: 0,
       toZ: CONFIG.camera.back,
     },
-    fx: { whoosh: false },
+    weapon: { seekT: 0, target: -1 },
+    upgrade: { pending: false, options: [], lastId: '' },
+    result: { ready: false, win: false, hold: 0 },
+    spawn: {
+      credit: 0,
+      hound30: false,
+      hound60: false,
+      ogreNext: CONFIG.scripted.ogre.firstAt,
+      bossSpawned: false,
+      eliteNext: CONFIG.elite.firstAt,
+      chestNext: CONFIG.chests.firstAt,
+      prepChest: false,
+      trapLast: false,
+      trapHounds: 0,
+      trapX: 0,
+      trapZ: 0,
+    },
+    boss: { summon: 0 },
+    settings: { volume: 0.8, sfx: 1, sweep: true },
+    doc: { open: false, nearId: '' },
+    fx: { whoosh: false, queue: [], rumble: '' },
     assets: {
       ready: false,
       hero: null,

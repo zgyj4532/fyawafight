@@ -16,6 +16,118 @@ let warnedStuck = false;
 let warnedPush = false;
 let warnedStep = false;
 
+// 均匀格子。吸血鬼幸存者一类游戏的省检查办法：障碍不动，开局按占地放进格子，
+// 移动时只查身边几格，再对格子里的形状做原来的精确推出。格子边长 4 米，
+// 比人和怪的半径大，绝大多数查询落在 1 到 4 格里。
+const CELL = 4;
+const grid = new Map();
+let seenC = new Uint32Array(512);
+let seenB = new Uint32Array(128);
+let nearC = new Int32Array(512);
+let nearB = new Int32Array(128);
+let stamp = 1;
+
+function cellKey(ix, iz) {
+  return (ix + 1024) * 8192 + (iz + 1024);
+}
+
+function addRef(ix, iz, ref) {
+  const key = cellKey(ix, iz);
+  let list = grid.get(key);
+  if (!list) {
+    list = [];
+    grid.set(key, list);
+  }
+  list.push(ref);
+}
+
+function cover(x0, z0, x1, z1, ref) {
+  const ix0 = Math.floor(x0 / CELL);
+  const ix1 = Math.floor(x1 / CELL);
+  const iz0 = Math.floor(z0 / CELL);
+  const iz1 = Math.floor(z1 / CELL);
+  for (let ix = ix0; ix <= ix1; ix += 1) {
+    for (let iz = iz0; iz <= iz1; iz += 1) addRef(ix, iz, ref);
+  }
+}
+
+function indexCircle(index, x, z, r) {
+  cover(x - r, z - r, x + r, z + r, index);
+}
+
+function indexBox(index, item) {
+  const ex = item.hx * Math.abs(item.c) + item.hz * Math.abs(item.s);
+  const ez = item.hx * Math.abs(item.s) + item.hz * Math.abs(item.c);
+  cover(item.x - ex, item.z - ez, item.x + ex, item.z + ez, ~index);
+}
+
+function growSeen(store, need, width) {
+  if (store.length > need) return store;
+  const next = new Uint32Array(need + width);
+  next.set(store);
+  return next;
+}
+
+function growNear(store, need, width) {
+  if (store.length > need) return store;
+  const next = new Int32Array(need + width);
+  next.set(store);
+  return next;
+}
+
+function sortPrefix(arr, n) {
+  for (let i = 1; i < n; i += 1) {
+    const value = arr[i];
+    let j = i - 1;
+    while (j >= 0 && arr[j] > value) {
+      arr[j + 1] = arr[j];
+      j -= 1;
+    }
+    arr[j + 1] = value;
+  }
+}
+
+function gather(px, pz, radius) {
+  stamp += 1;
+  if (stamp > 0xfffffffe) {
+    seenC.fill(0);
+    seenB.fill(0);
+    stamp = 1;
+  }
+  const ix0 = Math.floor((px - radius) / CELL);
+  const ix1 = Math.floor((px + radius) / CELL);
+  const iz0 = Math.floor((pz - radius) / CELL);
+  const iz1 = Math.floor((pz + radius) / CELL);
+  let nc = 0;
+  let nb = 0;
+  for (let ix = ix0; ix <= ix1; ix += 1) {
+    for (let iz = iz0; iz <= iz1; iz += 1) {
+      const list = grid.get(cellKey(ix, iz));
+      if (!list) continue;
+      for (let k = 0; k < list.length; k += 1) {
+        const ref = list[k];
+        if (ref >= 0) {
+          if (seenC[ref] === stamp) continue;
+          seenC[ref] = stamp;
+          if (nc >= nearC.length) nearC = growNear(nearC, nc, 256);
+          nearC[nc] = ref;
+          nc += 1;
+        } else {
+          const bi = ~ref;
+          if (seenB[bi] === stamp) continue;
+          seenB[bi] = stamp;
+          if (nb >= nearB.length) nearB = growNear(nearB, nb, 64);
+          nearB[nb] = bi;
+          nb += 1;
+        }
+      }
+    }
+  }
+  sortPrefix(nearC, nc);
+  sortPrefix(nearB, nb);
+  return { nc, nb };
+}
+
 function fail(message) {
   throw new Error(`[collision] ${message}`);
 }
@@ -107,10 +219,15 @@ export function registerAsset(tag, cx, cz, theta, def, scale = 1) {
       const r = shape.r * k;
       circles.push({ x, z, r, tag });
       if (r < minR) minR = r;
+      if (circles.length > seenC.length) seenC = growSeen(seenC, circles.length, 256);
+      indexCircle(circles.length - 1, x, z, r);
     } else {
-      boxes.push({
+      const item = {
         x, z, hx: shape.hx * k, hz: shape.hz * k, c, s, tag,
-      });
+      };
+      boxes.push(item);
+      if (boxes.length > seenB.length) seenB = growSeen(seenB, boxes.length, 64);
+      indexBox(boxes.length - 1, item);
     }
   }
   if (def.opening) {
@@ -153,8 +270,9 @@ export function resolve(x, z, radius) {
   let hit = false;
   for (let iter = 0; iter < 4; iter += 1) {
     hit = false;
-    for (let i = 0; i < circles.length; i += 1) {
-      const item = circles[i];
+    const near = gather(px, pz, radius);
+    for (let n = 0; n < near.nc; n += 1) {
+      const item = circles[nearC[n]];
       let dx = px - item.x;
       let dz = pz - item.z;
       const reach = radius + item.r;
@@ -175,8 +293,8 @@ export function resolve(x, z, radius) {
       pz += nz * pen;
       hit = true;
     }
-    for (let i = 0; i < boxes.length; i += 1) {
-      const item = boxes[i];
+    for (let n = 0; n < near.nb; n += 1) {
+      const item = boxes[nearB[n]];
       const dx = px - item.x;
       const dz = pz - item.z;
       const reach2 = (item.hx + radius) * (item.hx + radius) + (item.hz + radius) * (item.hz + radius);
@@ -353,6 +471,8 @@ export function colliderStats() {
     openings: openings.length,
     minR,
     limit: substepLimit(),
+    cells: grid.size,
+    cell: CELL,
   };
 }
 
@@ -364,6 +484,7 @@ export function clear() {
   circles.length = 0;
   boxes.length = 0;
   openings.length = 0;
+  grid.clear();
   minR = Infinity;
   warnedStuck = false;
   warnedPush = false;
