@@ -25,6 +25,7 @@
       <div class="menu-actions">
         <button id="btn-start" class="menu-btn primary" type="button">开始游戏</button>
         <button id="btn-howto" class="menu-btn" type="button">游玩说明</button>
+        <button id="btn-settings" class="menu-btn" type="button">设置</button>
       </div>
     </div>
   </div>
@@ -68,6 +69,7 @@
         <button class="card" type="button" data-pick="1"></button>
         <button class="card" type="button" data-pick="2"></button>
       </div>
+      <p id="pick-hint"></p>
     </div>
     <div id="result" hidden>
       <div id="result-panel">
@@ -75,6 +77,45 @@
         <p id="result-stats"></p>
         <button id="retry" type="button">再来一局</button>
       </div>
+    </div>
+    <div id="doc-hint" hidden></div>
+    <div id="doc" hidden>
+      <div class="doc-panel">
+        <h2>封缄文书</h2>
+        <p>沿路村镇即日起封锁。兽类由本团饲养，不得私放，不得外传。</p>
+        <p>署名：团长</p>
+        <p id="doc-key"></p>
+      </div>
+    </div>
+  </div>
+  <div id="settings" hidden>
+    <div class="settings-panel">
+      <div class="settings-tabs">
+        <button type="button" data-tab="sound">声音</button>
+        <button type="button" data-tab="keys">操作</button>
+        <button type="button" data-tab="view">画面</button>
+      </div>
+      <div class="settings-body" data-pane="sound">
+        <label>总音量 <input id="vol" type="range" min="0" max="100" value="80"></label>
+        <label>音效 <input id="sfx" type="range" min="0" max="100" value="100"></label>
+      </div>
+      <div class="settings-body" data-pane="keys" hidden>
+        <table class="key-table">
+          <tr><th>动作</th><th>键盘</th><th class="pad-col">手柄</th></tr>
+          <tr><td>移动</td><td>WASD</td><td class="pad-col">左摇杆</td></tr>
+          <tr><td>慢走</td><td>按住 Shift</td><td class="pad-col">摇杆轻轻推</td></tr>
+          <tr><td>翻滚</td><td>空格</td><td class="pad-col">A<small>选卡时改为确定，文书旁改为查看</small></td></tr>
+          <tr><td>暂停</td><td>Esc</td><td class="pad-col">Start</td></tr>
+          <tr><td>升级选择</td><td>1 2 3</td><td class="pad-col">摇杆左右，A 确定</td></tr>
+          <tr><td>查看文书</td><td>E</td><td class="pad-col">A</td></tr>
+        </table>
+        <p id="pad-col-note"></p>
+      </div>
+      <div class="settings-body" data-pane="view" hidden>
+        <button id="sweep-on" class="menu-btn" type="button">穿门时镜头扫过去</button>
+        <button id="sweep-off" class="menu-btn" type="button">直接出现在对面</button>
+      </div>
+      <button id="btn-settings-back" class="menu-btn primary" type="button">返回</button>
     </div>
   </div>
   <!-- 区块 3–7 在 js/：config、state、pipeline、六个系统、main。 -->

@@ -339,3 +339,82 @@ html, body {
   background: var(--xp);
   color: var(--ink);
 }
+
+#levelup {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+}
+
+.card { white-space: pre-line; }
+
+#pick-hint { margin: 0; font-size: 16px; letter-spacing: 0.08em; }
+
+#result-panel.drop { animation: sheet-drop 0.45s cubic-bezier(.16, .84, .3, 1); }
+
+@keyframes sheet-drop {
+  from { transform: translateY(-80vh); }
+  to { transform: translateY(0); }
+}
+
+#doc-hint {
+  position: absolute;
+  left: 50%;
+  bottom: 48px;
+  transform: translateX(-50%);
+  padding: 8px 14px;
+  background: rgba(7, 16, 24, 0.82);
+  border: 2px solid var(--xp);
+}
+
+#doc {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: rgba(7, 16, 24, 0.55);
+  pointer-events: auto;
+}
+
+.doc-panel, .settings-panel {
+  width: min(560px, calc(100% - 32px));
+  padding: 22px;
+  background: var(--hp-bg);
+  border: 2px solid rgba(30, 155, 232, 0.75);
+}
+
+#settings {
+  position: fixed;
+  inset: 0;
+  z-index: 8;
+  display: grid;
+  place-items: center;
+  background: rgba(7, 16, 24, 0.55);
+}
+
+#settings[hidden] { display: none; }
+
+.settings-tabs, .settings-body { display: flex; gap: 8px; }
+.settings-body { flex-direction: column; margin: 16px 0; }
+.settings-tabs button, #sweep-on, #sweep-off {
+  min-height: 40px;
+  padding: 0 12px;
+  border: 2px solid transparent;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+}
+.settings-tabs button.selected, #sweep-on.selected, #sweep-off.selected { border-color: var(--xp); }
+.pad-col.off { opacity: 0.35; }
+.key-table { width: 100%; border-collapse: collapse; }
+.key-table td, .key-table th { text-align: left; padding: 6px 4px; }
+.key-table small { display: block; opacity: 0.7; }
+
+.chest-arrow {
+  position: absolute;
+  font-size: 22px;
+  opacity: 0.7;
+  transform: translate(-50%, -50%);
+}

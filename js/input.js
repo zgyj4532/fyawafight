@@ -12,7 +12,7 @@ const touch = {
   dx: 0,
   dy: 0,
 };
-const edge = { dodge: false, pause: false };
+const edge = { dodge: false, pause: false, use: false, pick: -1 };
 const padWas = { dodge: false, pause: false, idle: 0 };
 let rightTapAt = 0;
 let bound = false;
@@ -28,6 +28,10 @@ function bind() {
       event.preventDefault();
     }
     if (event.code === 'Escape' || event.code === 'KeyP') edge.pause = true;
+    if (event.code === 'KeyE') edge.use = true;
+    if (event.code === 'Digit1') edge.pick = 0;
+    if (event.code === 'Digit2') edge.pick = 1;
+    if (event.code === 'Digit3') edge.pick = 2;
     if (event.code.startsWith('Arrow')) event.preventDefault();
   });
   window.addEventListener('keyup', (event) => keys.delete(event.code));
@@ -175,10 +179,33 @@ export function updateInput(state, dt) {
   input.moveX = move.x;
   input.moveZ = move.z;
   input.slow = board.slow;
-  input.dodge = edge.dodge || !!(pad && pad.dodge && !padWas.dodge);
+  const picking = state.upgrade.pending;
+  const reading = state.doc.open || (state.doc.nearId && !picking);
+  const padConfirm = !!(pad && pad.dodge && !padWas.dodge);
+  input.padConnected = !!pad;
+  if (!input.padConnected && input.device === 'gamepad') input.device = 'keyboard';
+  input.dodge = !picking && !reading && (edge.dodge || padConfirm);
+  input.confirm = padConfirm && (picking || reading);
+  input.useEdge = edge.use;
   input.pauseEdge = edge.pause || !!(pad && pad.pause && !padWas.pause);
+  if (edge.pick >= 0 && picking) {
+    input.upgradeIndex = edge.pick;
+    input.confirm = true;
+  }
+  if (picking && pad && !input.pickLatch && Math.abs(pad.x) > 0.55) {
+    input.pickLatch = true;
+    const count = state.upgrade.options.length || 1;
+    input.upgradeIndex = (input.upgradeIndex + (pad.x > 0 ? 1 : count - 1)) % count;
+  }
+  if (!pad || Math.abs(pad.x) < 0.35) input.pickLatch = false;
+  if (picking && input.device === 'gamepad') {
+    input.moveX = 0;
+    input.moveZ = 0;
+  }
   edge.dodge = false;
   edge.pause = false;
+  edge.use = false;
+  edge.pick = -1;
   padWas.dodge = !!(pad && pad.dodge);
   padWas.pause = !!(pad && pad.pause);
   input.pointer.active = touch.active;
@@ -190,4 +217,18 @@ export function updateInput(state, dt) {
   const driving = candidates.find((item) => item.active);
   noteDevice(input, driving ? driving.name : input.device, !!driving, dt);
   input.stickMag = move.mag;
+  if (state.fx.rumble) {
+    const kind = state.fx.rumble;
+    state.fx.rumble = '';
+    const live = navigator.getGamepads ? navigator.getGamepads()[CONFIG.input.gamepadIndex] : null;
+    const act = live && (live.vibrationActuator || (live.hapticActuators && live.hapticActuators[0]));
+    if (act && act.playEffect) {
+      const strong = kind === 'boss';
+      act.playEffect('dual-rumble', {
+        duration: strong ? CONFIG.input.bossHitRumbleMs : kind === 'chest' ? CONFIG.input.chestRumbleMs : CONFIG.input.hurtRumbleMs,
+        strongMagnitude: strong ? 0.8 : 0.25,
+        weakMagnitude: strong ? 0.6 : 0.4,
+      }).catch(() => {});
+    }
+  }
 }

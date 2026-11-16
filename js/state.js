@@ -181,6 +181,7 @@ export function createState() {
     boss: { summon: 0 },
     settings: { volume: 0.8, sfx: 1, sweep: true },
     doc: { open: false, nearId: '' },
+    ui: { settings: false, tab: 'sound' },
     fx: { whoosh: false, queue: [], rumble: '' },
     assets: {
       ready: false,
@@ -198,4 +199,35 @@ export function createState() {
     },
     rng: 1,
   };
+}
+
+export function resetRun(state) {
+  const next = createState();
+  state.time.elapsed = 0;
+  state.time.paused = false;
+  state.time.scale = 1;
+  state.phase = 'play';
+  state.player = next.player;
+  state.enemies = next.enemies;
+  state.bullets = next.bullets;
+  state.gems = next.gems;
+  state.chests = next.chests;
+  state.weapon = next.weapon;
+  state.upgrade = next.upgrade;
+  state.result = next.result;
+  state.spawn = next.spawn;
+  state.boss = next.boss;
+  state.doc.open = false;
+  state.doc.nearId = '';
+  state.fx.whoosh = false;
+  state.fx.queue.length = 0;
+  state.fx.rumble = '';
+  state.rng = 1;
+  state.hud.hp = -1;
+  state.hud.xp = -1;
+  state.hud.level = -1;
+  state.hud.time = -1;
+  state.hud.kills = -1;
+  state.hud.bossHp = -1;
+  state.hud.overlay = '';
 }

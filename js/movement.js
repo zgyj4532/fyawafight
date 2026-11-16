@@ -35,6 +35,13 @@ function desiredCamera(player) {
 function beginSweep(state) {
   const camera = state.camera;
   const next = desiredCamera(state.player);
+  if (state.settings && state.settings.sweep === false) {
+    camera.x = next.x;
+    camera.z = next.z;
+    camera.fov = CONFIG.camera.fov;
+    camera.sweeping = false;
+    return;
+  }
   camera.fromX = camera.x;
   camera.fromZ = camera.z;
   camera.toX = next.x;

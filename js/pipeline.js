@@ -134,23 +134,34 @@ export function createSynth() {
     if (ctx.state === 'suspended') ctx.resume();
     return ctx;
   }
+  const tones = {
+    whoosh: [180, 60, 0.2, 'sine'],
+    shoot: [880, 440, 0.06, 'square'],
+    hit: [240, 120, 0.05, 'triangle'],
+    hurt: [140, 70, 0.12, 'sawtooth'],
+    chest: [520, 880, 0.16, 'sine'],
+    charge: [90, 40, 0.28, 'sawtooth'],
+    bossHit: [70, 30, 0.22, 'square'],
+  };
   synth = {
-    play(name) {
+    play(name, volume = 1) {
       const audio = context();
-      if (!audio || name !== 'whoosh') return;
+      const tone = tones[name];
+      if (!audio || !tone || volume <= 0) return;
       const t = audio.currentTime;
       const osc = audio.createOscillator();
       const gain = audio.createGain();
-      osc.type = 'sine';
-      osc.frequency.setValueAtTime(180, t);
-      osc.frequency.exponentialRampToValueAtTime(60, t + 0.18);
+      osc.type = tone[3];
+      osc.frequency.setValueAtTime(tone[0], t);
+      osc.frequency.exponentialRampToValueAtTime(Math.max(1, tone[1]), t + tone[2]);
+      const peak = 0.08 * volume;
       gain.gain.setValueAtTime(0.0001, t);
-      gain.gain.exponentialRampToValueAtTime(0.12, t + 0.02);
-      gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.2);
+      gain.gain.exponentialRampToValueAtTime(peak, t + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t + tone[2]);
       osc.connect(gain);
       gain.connect(audio.destination);
       osc.start(t);
-      osc.stop(t + 0.21);
+      osc.stop(t + tone[2] + 0.02);
     },
   };
   return synth;

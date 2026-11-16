@@ -11,6 +11,9 @@ import { createEvidence } from './evidence.js';
 import { createScenery } from './scenery.js';
 import { createBorderFX } from './borderfx.js';
 import { createBossView } from './bossview.js';
+import { createActors } from './actors.js';
+import { applyUpgrade } from './combat.js';
+import { resetRun } from './state.js';
 import { assertClearances, colliderStats, debugSegmentCount, writeDebugXZ } from './collision.js';
 import {
   createFallbackMesh,
@@ -40,6 +43,27 @@ function dom() {
   hud.start = document.getElementById('btn-start');
   hud.howtoOpen = document.getElementById('btn-howto');
   hud.howtoBack = document.getElementById('btn-howto-back');
+  hud.levelup = document.getElementById('levelup');
+  hud.cards = Array.from(document.querySelectorAll('#cards .card'));
+  hud.pickHint = document.getElementById('pick-hint');
+  hud.result = document.getElementById('result');
+  hud.resultTitle = document.getElementById('result-title');
+  hud.resultStats = document.getElementById('result-stats');
+  hud.resultPanel = document.getElementById('result-panel');
+  hud.retry = document.getElementById('retry');
+  hud.bossBar = document.getElementById('boss-bar');
+  hud.bossFill = document.getElementById('boss-fill');
+  hud.bossName = document.getElementById('boss-name');
+  hud.doc = document.getElementById('doc');
+  hud.docHint = document.getElementById('doc-hint');
+  hud.docKey = document.getElementById('doc-key');
+  hud.settings = document.getElementById('settings');
+  hud.settingsOpen = document.getElementById('btn-settings');
+  hud.settingsBack = document.getElementById('btn-settings-back');
+  hud.padNote = document.getElementById('pad-col-note');
+  hud.vol = document.getElementById('vol');
+  hud.sfx = document.getElementById('sfx');
+  hud.arrows = document.getElementById('chest-arrows');
   return hud;
 }
 
@@ -54,9 +78,48 @@ function bindMenu(state) {
   nodes.howtoBack.addEventListener('click', () => {
     state.phase = 'menu';
   });
+  if (nodes.retry) nodes.retry.addEventListener('click', () => startGame(state));
+  nodes.cards.forEach((card, i) => {
+    card.addEventListener('click', () => {
+      if (!state.upgrade.pending) return;
+      const pick = state.upgrade.options[i];
+      if (pick) applyUpgrade(state, pick.id);
+    });
+  });
+  if (nodes.settingsOpen) {
+    nodes.settingsOpen.addEventListener('click', () => {
+      state.ui.settings = true;
+    });
+  }
+  if (nodes.settingsBack) {
+    nodes.settingsBack.addEventListener('click', () => {
+      state.ui.settings = false;
+    });
+  }
+  document.querySelectorAll('#settings [data-tab]').forEach((button) => {
+    button.addEventListener('click', () => {
+      state.ui.tab = button.dataset.tab;
+    });
+  });
+  if (nodes.vol) {
+    nodes.vol.addEventListener('input', () => {
+      state.settings.volume = Number(nodes.vol.value) / 100;
+    });
+  }
+  if (nodes.sfx) {
+    nodes.sfx.addEventListener('input', () => {
+      state.settings.sfx = Number(nodes.sfx.value) / 100;
+      if (state.view) state.view.synth.play('shoot', state.settings.volume * state.settings.sfx);
+    });
+  }
+  const sweepOn = document.getElementById('sweep-on');
+  const sweepOff = document.getElementById('sweep-off');
+  if (sweepOn) sweepOn.addEventListener('click', () => { state.settings.sweep = true; });
+  if (sweepOff) sweepOff.addEventListener('click', () => { state.settings.sweep = false; });
 }
 
 function startGame(state) {
+  resetRun(state);
   const spawn = CONFIG.arena.spawn;
   const player = state.player;
   player.x = spawn.x;
@@ -421,6 +484,7 @@ export async function bootView(state) {
   shadow.position.y = 0.03;
   scene.add(shadow);
   scene.add(hero);
+  const actors = await createActors(scene);
 
   // 调试观测点：地址栏加 ?boss=1 会在出生点右前方立一个 Boss，只走渲染，
   // 不参与 AI、碰撞、伤害与血条。用来验收模型、动作切换与胸甲纹章。
@@ -467,6 +531,7 @@ export async function bootView(state) {
     narrative,
     scenery,
     evidence,
+    actors,
     debugBoss,
   };
   state.assets.ready = true;
@@ -608,7 +673,7 @@ function syncHud(state) {
     state.hud.kills = player.kills;
     nodes.kills.textContent = String(player.kills);
   }
-  nodes.pause.hidden = !state.time.paused;
+  nodes.pause.hidden = !state.time.paused || state.doc.open;
   nodes.pad.hidden = state.input.device !== 'gamepad';
   const pointer = state.input.pointer;
   nodes.stick.hidden = !pointer.active;
@@ -622,30 +687,171 @@ function syncHud(state) {
   }
 }
 
+function nearestDocument(state) {
+  const list = state.view && state.view.evidence && state.view.evidence.interactables;
+  if (!list) return '';
+  const player = state.player;
+  let best = '';
+  let bestD = 2.2;
+  for (let i = 0; i < list.length; i += 1) {
+    const item = list[i];
+    const d = Math.hypot(item.x - player.x, item.z - player.z);
+    if (d < bestD) {
+      bestD = d;
+      best = item.id;
+    }
+  }
+  if (best === 'seal-warrant') {
+    const scroll = list.find((item) => item.id === 'order-scroll');
+    if (scroll && Math.hypot(scroll.x - player.x, scroll.z - player.z) < 2.2) best = 'order-scroll';
+  }
+  return best;
+}
+
+function syncBattle(state) {
+  const nodes = dom();
+  const input = state.input;
+  if (state.phase === 'play') {
+    state.doc.nearId = nearestDocument(state);
+    if (input.useEdge && state.doc.nearId) {
+      state.doc.open = !state.doc.open;
+      state.time.paused = state.doc.open;
+    } else if (input.confirm && state.doc.nearId && !state.upgrade.pending) {
+      state.doc.open = !state.doc.open;
+      state.time.paused = state.doc.open;
+    } else if (input.pauseEdge && state.doc.open) {
+      state.doc.open = false;
+      state.time.paused = false;
+      input.pauseEdge = false;
+    }
+    if (input.confirm && state.upgrade.pending) {
+      const pick = state.upgrade.options[input.upgradeIndex] || state.upgrade.options[0];
+      if (pick) applyUpgrade(state, pick.id);
+    }
+  }
+  input.confirm = false;
+  input.useEdge = false;
+
+  const padHint = input.device === 'gamepad' && input.padConnected;
+  if (nodes.levelup) nodes.levelup.hidden = !state.upgrade.pending || state.phase !== 'play';
+  if (state.upgrade.pending && nodes.cards) {
+    state.upgrade.options.forEach((opt, i) => {
+      const card = nodes.cards[i];
+      if (!card) return;
+      const key = padHint ? '' : `按 ${i + 1}`;
+      card.textContent = `${opt.text}\n${key}`;
+      card.classList.toggle('selected', i === input.upgradeIndex);
+    });
+    if (nodes.pickHint) {
+      nodes.pickHint.textContent = padHint ? '左摇杆左右选择，A 确定' : '';
+    }
+  }
+
+  const showResult = state.phase === 'result';
+  if (nodes.result) {
+    if (showResult && nodes.result.hidden) {
+      nodes.result.hidden = false;
+      if (nodes.resultPanel) {
+        nodes.resultPanel.classList.remove('drop');
+        void nodes.resultPanel.offsetWidth;
+        nodes.resultPanel.classList.add('drop');
+      }
+    }
+    if (!showResult) nodes.result.hidden = true;
+  }
+  if (showResult && nodes.resultTitle) {
+    nodes.resultTitle.textContent = state.result.win ? '通关' : '失败';
+    const sec = Math.floor(state.time.elapsed);
+    nodes.resultStats.textContent = `存活 ${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}　击杀 ${state.player.kills}　等级 ${state.player.level}　最高连击 ${state.player.bestCombo}`;
+  }
+
+  const boss = state.enemies[0];
+  const showBoss = boss && boss.kind === 'hese' && (boss.alive || state.result.hold > 0);
+  if (nodes.bossBar) nodes.bossBar.hidden = !showBoss;
+  if (showBoss && nodes.bossFill) {
+    const ratio = boss.hpMax > 0 ? Math.max(0, boss.hp / boss.hpMax) : 0;
+    nodes.bossFill.style.transform = `scaleX(${ratio})`;
+    if (nodes.bossName) nodes.bossName.textContent = CONFIG.boss.name;
+  }
+
+  if (nodes.docHint) {
+    const showHint = state.phase === 'play' && state.doc.nearId && !state.doc.open;
+    nodes.docHint.hidden = !showHint;
+    if (showHint) nodes.docHint.textContent = padHint ? '查看文书 · A' : '查看文书 · E';
+  }
+  if (nodes.doc) nodes.doc.hidden = !state.doc.open;
+  if (nodes.docKey) nodes.docKey.textContent = padHint ? '再按 A 或 Esc 关闭' : '再按 E 或 Esc 关闭';
+
+  if (nodes.arrows && state.phase === 'play') {
+    const old = nodes.arrows.children;
+    while (old.length) old[0].remove();
+    state.chests.forEach((chest) => {
+      if (!chest.alive) return;
+      const dx = chest.x - state.player.x;
+      const dz = chest.z - state.player.z;
+      let dist = Math.hypot(dx, dz);
+      const half = CONFIG.arena.half;
+      if (dx > half) dist = Math.hypot(dx - CONFIG.arena.size, dz);
+      if (dx < -half) dist = Math.hypot(dx + CONFIG.arena.size, dz);
+      if (dist < CONFIG.chests.arrowBeyond) return;
+      const type = CONFIG.chests.types[chest.type] || CONFIG.chests.types.xp;
+      const arrow = document.createElement('div');
+      arrow.className = 'chest-arrow';
+      arrow.style.color = type.color;
+      const ang = Math.atan2(dx, -dz);
+      arrow.style.left = `${50 + Math.sin(ang) * 42}%`;
+      arrow.style.top = `${50 - Math.cos(ang) * 36}%`;
+      arrow.textContent = '▲';
+      nodes.arrows.appendChild(arrow);
+    });
+  }
+
+  if (nodes.settings) nodes.settings.hidden = !state.ui.settings;
+  document.querySelectorAll('#settings [data-pane]').forEach((pane) => {
+    pane.hidden = pane.dataset.pane !== state.ui.tab;
+  });
+  document.querySelectorAll('#settings [data-tab]').forEach((button) => {
+    button.classList.toggle('selected', button.dataset.tab === state.ui.tab);
+  });
+  if (nodes.padNote) {
+    nodes.padNote.textContent = input.padConnected ? '手柄已连接' : '手柄未连接';
+  }
+  const padCol = document.querySelector('#settings .pad-col');
+  if (padCol) padCol.classList.toggle('off', !input.padConnected);
+  document.getElementById('sweep-on')?.classList.toggle('selected', state.settings.sweep);
+  document.getElementById('sweep-off')?.classList.toggle('selected', !state.settings.sweep);
+}
+
 function syncShell(state) {
   const nodes = dom();
-  nodes.root.classList.toggle('in-play', state.phase === 'play');
-  nodes.menu.hidden = state.phase !== 'menu';
+  nodes.root.classList.toggle('in-play', state.phase === 'play' || state.phase === 'result');
+  nodes.menu.hidden = state.phase !== 'menu' || state.ui.settings;
   nodes.howto.hidden = state.phase !== 'howto';
 }
 
 export function updateRenderAndHUD(state, dt) {
   if (!state.view) return;
-  if (state.phase === 'play') {
+  if (state.phase === 'play' || state.phase === 'result') {
+    const vol = state.settings.volume * state.settings.sfx;
     if (state.fx.whoosh) {
       state.fx.whoosh = false;
-      state.view.synth.play('whoosh');
+      state.view.synth.play('whoosh', vol);
     }
-    if (state.input.pauseEdge) state.time.paused = !state.time.paused;
+    while (state.fx.queue.length) state.view.synth.play(state.fx.queue.shift(), vol);
+    if (state.phase === 'play' && state.input.pauseEdge && !state.doc.open) {
+      state.time.paused = !state.time.paused;
+    }
     syncHero(state, dt);
     syncBorderFX(state);
     syncCamera(state);
     syncHud(state);
+    if (state.view.actors) state.view.actors.update(state, dt);
   } else {
     syncHero(state, dt);
     state.view.hero.rotation.y = 0;
     syncMenuCamera(state);
   }
+  syncBattle(state);
   syncShell(state);
   const grass = state.view.grass;
   if (grass) {
