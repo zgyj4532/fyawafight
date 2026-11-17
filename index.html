@@ -19,14 +19,14 @@
   <!-- 区块 1 [STYLE & HUD DOM] 常驻：生命、经验、计时、击杀。其余按需显示。 -->
   <canvas id="view"></canvas>
   <div id="menu">
-    <img id="cover" src="assets/cover/fyagent_setting.png" alt="FYAgent 角色设定">
+    <img id="cover" src="assets/cover/fyagent_cover.png" alt="FYAgent Survivors">
     <div id="menu-copy">
-      <h1 id="menu-title">FYAgent Survivors</h1>
       <div class="menu-actions">
         <button id="btn-start" class="menu-btn primary" type="button">开始游戏</button>
         <button id="btn-howto" class="menu-btn" type="button">游玩说明</button>
         <button id="btn-settings" class="menu-btn" type="button">设置</button>
       </div>
+      <div id="build-stamp">构筑 —</div>
     </div>
   </div>
   <div id="howto" hidden>
@@ -34,7 +34,8 @@
       <h2>游玩说明</h2>
       <p>走位就是操作。武器会自己攻击，不用瞄准。</p>
       <ul>
-        <li>键盘：WASD 或方向键移动，按住 Shift 慢走，空格翻滚，Esc 暂停。</li>
+        <li>键盘：WASD 或方向键移动，空格翻滚，Esc 暂停。</li>
+        <li>按住 Shift 慢走。按住满 2 秒，松开发射蓄力射击，可以秒杀史莱姆。</li>
         <li>手柄：左摇杆移动，A 或 RT 翻滚，Start 暂停。</li>
         <li>触屏：左半边拖动移动，右半边双击翻滚。</li>
         <li>走出场地会从对面出现，镜头跟着扫过去。</li>
@@ -66,9 +67,14 @@
     <div id="chest-arrows"></div>
     <div id="joystick" hidden><div id="stick"></div></div>
     <div id="pad-hint" hidden>摇杆移动 · A 闪避 · Start 暂停</div>
+    <div id="charge" hidden>
+      <span id="charge-label">蓄力</span>
+      <div class="bar-track"><div id="charge-fill"></div></div>
+    </div>
     <div id="pause" hidden>
       <div class="pause-sheet">
-        <p>暂停</p>
+        <p class="pause-title">暂停</p>
+        <dl id="pause-stats"></dl>
         <button id="btn-pause-settings" type="button">设置</button>
       </div>
     </div>
@@ -91,8 +97,14 @@
     <div id="doc-hint" hidden></div>
     <div id="doc" hidden>
       <div class="doc-panel">
-        <h2>命令文书</h2>
-        <p>署名：团长</p>
+        <p class="doc-office" id="doc-office">哥维纳骑士团 · 军需处</p>
+        <h2 id="doc-title">命令文书</h2>
+        <p class="doc-meta" id="doc-meta"></p>
+        <div class="doc-body" id="doc-body"></div>
+        <div class="doc-foot">
+          <p class="doc-sign" id="doc-sign">署名：团长</p>
+          <span class="doc-seal" id="doc-seal">团长印</span>
+        </div>
         <p id="doc-key"></p>
       </div>
     </div>
@@ -114,7 +126,7 @@
         <table class="key-table">
           <tr><th>动作</th><th>键盘</th><th id="pad-head" class="pad-col">手柄未连接</th></tr>
           <tr><td>移动</td><td>WASD</td><td class="pad-col">左摇杆</td></tr>
-          <tr><td>慢走</td><td>按住 Shift</td><td class="pad-col">摇杆轻轻推</td></tr>
+          <tr><td>慢走 / 蓄力</td><td>按住 Shift，满 2 秒后松开射击</td><td class="pad-col">摇杆轻轻推</td></tr>
           <tr><td>翻滚</td><td>空格</td><td class="pad-col">A<small>选卡时改为确定，文书旁改为查看</small></td></tr>
           <tr><td>暂停</td><td>Esc</td><td class="pad-col">Start</td></tr>
           <tr><td>升级选择</td><td>1 2 3</td><td class="pad-col">摇杆左右，A 确定</td></tr>

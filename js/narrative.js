@@ -11,7 +11,8 @@
 //   幕一  0…16     路还在用：车辙、路标、里程碑、木桶 —— 都还是立着的
 //   幕二 16…27     人走了：一口井、一个凉掉的火塘、一辆翻倒的车 —— 走得急
 //   幕三 32…40     处决：断墙、掉在地上的盾和断剑、绞刑架 —— 谁在管这条路
-//   幕四 44…−46    兽：巨兽骨骸压到路肩上，旁边一座立着十字架的坟 —— 这才是路荒掉的原因
+//   幕四 43…45     坟：一座立着十字架的坟，裹布还在。巨兽骨骸已搬到西南角当地标（js/landmarks.js），
+//                   这条路上只剩"谁给它立了坟"这层意思，兽骨本身去了沼泽枯林。
 //   幕五 −37…−27   更早的一层：一座门、一座塌掉的同款门、一圈立石 —— 兽来之前这里已经死过一次
 //
 // 摆位不写死坐标，而是写「沿路的里程 + 离中线的距离」，由 pathCenterZ / pathSlope
@@ -27,7 +28,7 @@ import { pathCenterZ, pathSlope, terrainY } from './path.js';
 import { COLLIDERS } from './collision-data.js';
 import { registerAsset } from './collision.js';
 
-const ASSET_ROOT = 'models/env/body/';
+const ASSET_ROOT = 'models/active/env/body/';
 
 // targetHeight 是「这个物件进游戏后应该多高」，不是模型的原始高度。
 // shadow 是贴地阴影片的 [半径, 纵向压扁]，没有 shadowMap，靠它把物件钉在地上。
@@ -107,27 +108,31 @@ const SPOTS = [
   // 挤在一起就是一团，看不出是"火塘 + 井 + 车"三件事。
   { asset: 'campfire', x: 15.4, side: -1, lateral: 4.8, yaw: 0.4, note: '火塘在井边，凉了很久' },
   { asset: 'well', x: 19.4, side: -1, lateral: 5.8, yaw: 0.35, note: '井圈还在，绳没了' },
-  { asset: 'cart', x: 23.0, side: -1, lateral: 6.4, yaw: 0.75, note: '车翻在营地门口，货撒了一地 —— 走得急' },
+  { asset: 'cart', x: 24.2, side: -1, lateral: 6.5, yaw: 0.75, note: '车翻在营地门口，货撒了一地 —— 走得急' },
   { asset: 'pillar', x: 27.6, side: 1, lateral: 6.2, yaw: 1.05, note: '倒塌院墙的一角，在路的另一边' },
 
   // 幕三 · 处决：断墙、掉在地上的盾和断剑、绞刑架。
   // 顺序是顺着路的：先看到墙，再看到墙脚的装备，最后抬头是绞刑架。
   // 三件 3 m 上下一件，仍然是一处现场，但不再互相压住。
-  { asset: 'pillar', x: 32.6, side: 1, lateral: 5.2, yaw: 0.2, note: '断墙，墙脚有东西' },
+  { asset: 'pillar', x: 32.6, side: 1, lateral: 6.4, yaw: 0.2, note: '断墙，墙脚有东西' },
   { asset: 'shield', x: 35.4, side: 1, lateral: 4.8, yaw: -0.5, note: '盾还靠在石头上，剑断了 —— 抵抗过' },
-  { asset: 'gallows', x: 38.6, side: 1, lateral: 4.4, yaw: -0.12, note: '贴在路肩上，是给过路人看的' },
+  { asset: 'gallows', x: 39.8, side: 1, lateral: 4.4, yaw: -0.12, note: '贴在路肩上，是给过路人看的' },
 
-  // 幕四 · 兽：巨兽骨骸，旁边一座坟。有人给它立了十字架、披了布。
-  // 这两件必须同框，否则「谁埋了它」这层意思就没了。
-  { asset: 'cloak', x: 41.6, side: 1, lateral: 6.2, yaw: -0.25, note: '裹布十字架，坟就在兽旁边' },
-  { asset: 'skeleton', x: 45.4, side: 1, lateral: 3.6, yaw: 1.42, note: '横在路肩上，肋骨朝着路' },
+  // 幕四 · 坟：一座立着十字架的坟，裹布还在。
+  // 原来的巨兽骨骸（x=47.6）已搬到西南角当第三层专属地标（见 js/landmarks.js），
+  // 主路不再摆兽骨 —— 否则同一具骨骸在路肩和西南角各出现一次，会读成"两只一样的兽"。
+  { asset: 'cloak', x: 43.9, side: 1, lateral: 6.2, yaw: -0.25, note: '裹布十字架，一座没人认领的坟' },
   { asset: 'tower', x: -42, side: -1, lateral: 9.0, yaw: 0.25, note: '远景方向感，也是唯一的制高点' },
 
   // 幕五 · 更早的一层：一座门、一座塌了的门、一圈立石。
   // 三件收在 9 m 内，读成同一处遗址，而不是三个孤立的古董。
   { asset: 'arch', x: -35, side: 1, lateral: 0.4, yaw: Math.PI / 2, note: '门洞正对路面，玩家从下面穿过，是进入遗址区的界线' },
   { asset: 'archLow', x: -31.0, side: -1, lateral: 6.4, yaw: 0.9, note: '同一座门的另一半，塌了' },
-  { asset: 'stones', x: -27.4, side: 1, lateral: 8.6, yaw: 0.6, note: '立石还站着，说明它比门更晚倒' },
+  // 立石原来在 x=−27.4 / lateral 8.6（世界坐标 −23.4, 3.6），正好压在
+  // 2026-11-17 新加的横路中心线上。往西挪到门后：+z 侧、lateral 收到 5.0，
+  // 世界坐标 (−31.8, 4.0) —— 离门 4.8 m、离横路 8.1 m。
+  // 顺序也跟着变好：过门 → 门后立石，"它比门更晚倒"这句话还成立。
+  { asset: 'stones', x: -34.0, side: 1, lateral: 5.0, yaw: 0.6, note: '立石还站着，说明它比门更晚倒' },
 
   // 收尾 · 回到起点：一口井、一根柱子，正对着出生点。
   { asset: 'well', x: -12, side: 1, lateral: 5.8, yaw: 2.9, note: '和幕二那口井是同一类东西，读者自己会连起来' },

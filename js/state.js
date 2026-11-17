@@ -37,6 +37,15 @@ function enemySlot(id) {
     dashHit: false,
     portalCd: 0,
     recoverNeed: 0,
+    // 上一次吃到的碰撞法线 + 记忆时长，给「贴着障碍滑」用（js/ai.js）。
+    nX: 0,
+    nZ: 0,
+    blockT: 0,
+    // 挤住的累计时长与临时绕行目标（夹角死锁，见 js/ai.js 的 planDetour）。
+    wedgeT: 0,
+    detourT: 0,
+    detourX: 0,
+    detourZ: 0,
   };
 }
 
@@ -58,6 +67,7 @@ function chestSlot(id) {
 function bulletPool(count) {
   const pool = typedPool(count);
   pool.pierce = new Uint8Array(count);
+  pool.charge = new Uint8Array(count);
   pool.hit = new Uint8Array(count * CONFIG.spawn.maxAlive);
   return pool;
 }
@@ -128,8 +138,11 @@ export function createState() {
       speedBuff: 0,
       speedBuffMul: 1,
       // 0…1，土路权重。移动和渲染共用，避免两处各算一遍导致视觉和数值对不上。
+      // pathBlend 取两条路的较大值（脚下高光用），crossBlend 只记横路那一条。
       pathBlend: 0,
+      crossBlend: 0,
       hurtCd: 0,
+      chargeT: 0,
     },
     input: {
       moveX: 0,
@@ -187,6 +200,7 @@ export function createState() {
       ready: false,
       hero: null,
       meshes: {},
+      bodyRadius: {},
     },
     hud: {
       hp: -1,

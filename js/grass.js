@@ -6,7 +6,7 @@
 
 import * as THREE from 'three';
 import { createToonGradientMap } from './pipeline.js';
-import { PATH_GLSL, createPathUniforms } from './path.js';
+import { PATH_GLSL, STAIN_GLSL, GROUND_STAIN, createPathUniforms } from './path.js';
 import { LAKE_SPOTS } from './lake.js';
 
 // 草场是一个 56 m 的重复瓦片。视野约 28×16 m，边界永远在画面外。
@@ -175,7 +175,9 @@ function buildMaterial(uniforms) {
     shader.uniforms.uLakes = uniforms.uLakes;
     Object.assign(shader.uniforms, uniforms.path);
 
+    Object.assign(shader.uniforms, GROUND_STAIN);
     shader.vertexShader = `
+varying vec3 vStainWorld;
 uniform float uTime;
 uniform vec2 uCamXZ;
 uniform float uHalf;
@@ -223,6 +225,9 @@ float pathK = 1.0;
   // 路肩留出 1.7 m 的裸土带：路基被垫起来之后，这一段是坡面最陡的地方，
   // 不长草才说得通，也顺手把路堤的明暗交代清楚。
   pathK = smoothstep( uPathHalf - 0.60, uPathHalf + 1.00, pathDist( rel ) );
+  // 横路（十字路口那条）同样把草压掉。它不垫高，所以只需要这一步遮罩，
+  // 地形高度仍然是主路的 terrainY（横路是平铺在地形上的）。
+  pathK *= smoothstep( uCrossHalf - 0.60, uCrossHalf + 1.00, crossDist( rel ) );
   // 湖里不长草。水盆是沉到地面以下的，草留在 y=0 会从水面戳出来，
   // 一片水里全是绿色的点。每一个水盆都压一遍（和路基是同一套办法）。
   for ( int i = 0; i < 4; i++ ) {
@@ -248,13 +253,21 @@ float pathK = 1.0;
   mvPosition.y += terrainY( rel );
   mvPosition.xz += vec2( sway, sway * 0.6 ) * bladeH * bladeH * pathK;
 #endif
+vStainWorld = mvPosition.xyz;
 mvPosition = modelViewMatrix * mvPosition;
 gl_Position = projectionMatrix * mvPosition;
 `,
     );
+
+    shader.fragmentShader = `varying vec3 vStainWorld;\n${STAIN_GLSL}${shader.fragmentShader}`;
+    shader.fragmentShader = shader.fragmentShader.replace(
+      '#include <alphamap_fragment>',
+      `#include <alphamap_fragment>
+diffuseColor.rgb = mix(diffuseColor.rgb, uStainColor, stainMask(vStainWorld.xz) * uStainAmt);`,
+    );
   };
 
-  material.customProgramCacheKey = () => 'grass-ring';
+  material.customProgramCacheKey = () => 'grass-ring-stain';
   return material;
 }
 

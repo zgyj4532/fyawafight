@@ -2,7 +2,7 @@
 // 加减速、转向、翻滚、环面环绕、0.38 秒 easeOutCubic 镜头横扫。只写 player、camera、fx。
 
 import { CONFIG } from './config.js';
-import { pathFactor, terrainY } from './path.js';
+import { pathFactors, speedMulFromBlend, terrainY } from './path.js';
 import { pushOutOfLake } from './lake.js';
 import { clipVelocity, resolve, substepCount } from './collision.js';
 
@@ -25,10 +25,10 @@ function wrapAngle(delta) {
 }
 
 function desiredCamera(player) {
-  const limit = CONFIG.arena.half - CONFIG.camera.inset;
+  // 偏移跟开局一样，不在边界把镜头夹住。夹住后人还在走，注视点一偏，俯角就会立起来。
   return {
-    x: Math.min(limit, Math.max(-limit, player.x)),
-    z: Math.min(limit, Math.max(-limit, player.z + CONFIG.camera.back)),
+    x: player.x,
+    z: player.z + CONFIG.camera.back,
   };
 }
 
@@ -115,12 +115,14 @@ export function updateMovement(state, dt) {
 
   // 土路权重。路面本身已经是 0…1 的连续值，这里再缓一步，
   // 让离开路面时提速是「卸掉」而不是「关掉」。
-  const pathW = pathFactor(player.x, player.z);
-  player.pathBlend += (pathW - player.pathBlend)
-    * (1 - Math.exp(-move.path.blendRate * step));
+  // 两条路各缓一条：主路 1.18、横路 1.25，权重不能共用一个标量。
+  const w = pathFactors(player.x, player.z);
+  const k = 1 - Math.exp(-move.path.blendRate * step);
+  player.pathBlend += (Math.max(w.main, w.cross) - player.pathBlend) * k;
+  player.crossBlend += (w.cross - player.crossBlend) * k;
 
   let maxSpeed = player.spd * (player.speedBuff > 0 ? player.speedBuffMul : 1);
-  maxSpeed *= 1 + (move.path.speedMul - 1) * player.pathBlend;
+  maxSpeed *= speedMulFromBlend(player.pathBlend, player.crossBlend);
   if (input.slow) maxSpeed *= move.slowMul;
   const stick = input.stickMag ?? Math.hypot(input.moveX, input.moveZ);
   if (input.device === 'gamepad' && stick > 0 && stick <= CONFIG.input.fineMax) {
@@ -132,7 +134,7 @@ export function updateMovement(state, dt) {
   if (player.rollT > 0) {
     wishX = Math.sin(player.facing);
     wishZ = Math.cos(player.facing);
-    maxSpeed *= 1.2;
+    maxSpeed *= move.roll.speedMul;
   } else {
     const mag = Math.hypot(input.moveX, input.moveZ);
     if (mag > 0) {

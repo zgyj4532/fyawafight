@@ -4,7 +4,7 @@
 import * as THREE from 'three';
 import { clone as cloneSkeleton } from 'three/addons/utils/SkeletonUtils.js';
 import { CONFIG } from './config.js';
-import { terrainY } from './path.js';
+import { GROUND_STAIN, terrainY } from './path.js';
 import { createBossView } from './bossview.js';
 import { createToonGradientMap, findClip, loadAndNormalizeGLB } from './pipeline.js';
 
@@ -63,13 +63,14 @@ function fitGround(geo, height) {
   return h > 1e-4 ? height / h : 1;
 }
 
-async function loadTemplate(url, legacy) {
+async function loadTemplate(url, legacy, opts) {
+  const config = opts || { autoScale: false };
   try {
-    return await loadAndNormalizeGLB(url, { autoScale: false });
+    return await loadAndNormalizeGLB(url, config);
   } catch (primary) {
     if (!legacy) return null;
     try {
-      return await loadAndNormalizeGLB(legacy, { autoScale: false });
+      return await loadAndNormalizeGLB(legacy, config);
     } catch (err) {
       console.warn('[actors] 模型没载入', url, primary, err);
       return null;
@@ -132,6 +133,53 @@ function assignPool(pool, enemies, kind, player) {
   }
 }
 
+function horizontalRadius(root) {
+  root.updateMatrixWorld(true);
+  const box = new THREE.Box3().setFromObject(root);
+  if (box.isEmpty()) return 0;
+  return Math.max(box.max.x, -box.min.x, box.max.z, -box.min.z);
+}
+
+// 史莱姆的贴图是**紫色**（config 里那句 referenceColor: '#6E4AA8' 就是它）。
+// 变体色走 InstancedMesh.instanceColor，在着色器里是**乘法**：
+//   屏幕颜色 = 贴图（紫）× 变体色 × 光
+// 紫 × 绿 ≈ 泥，紫 × 红 ≈ 褐 —— 所以三个变体一直是「脏」的，绿的尤其像墨绿。
+//
+// 这里的解法不是继续调乘法系数（调不出来，紫的蓝通道乘什么都是灰的），
+// 而是先把贴图**去色**：只留明暗（眼睛变暗、身子亮起来），色相交给变体色。
+// 一份贴图去一次色即可，三个变体共用。
+function desaturateMap(map) {
+  const img = map && map.image;
+  const w = img && (img.width | 0);
+  const h = img && (img.height | 0);
+  if (!w || !h) return map;
+  const cv = document.createElement('canvas');
+  cv.width = w;
+  cv.height = h;
+  const ctx = cv.getContext('2d');
+  ctx.drawImage(img, 0, 0, w, h);
+  const data = ctx.getImageData(0, 0, w, h);
+  const px = data.data;
+  for (let i = 0; i < px.length; i += 4) {
+    const lum = 0.299 * px[i] + 0.587 * px[i + 1] + 0.114 * px[i + 2];
+    // 减 25 再乘 2.6：眼睛那种暗块（lum≈30）落到 10 上下，身体（lum≈100）抬到 200。
+    // 系数小一点的话身体只有 70 左右，变体色一乘还是暗绿 —— 量过：
+    // (lum-40)*1.45 出来的本体是 RGB(101,137,59)，还是橄榄绿，不是浅绿。
+    const v = Math.min(255, Math.max(0, (lum - 25) * 2.6));
+    px[i] = v;
+    px[i + 1] = v;
+    px[i + 2] = v;
+  }
+  ctx.putImageData(data, 0, 0);
+  const tex = new THREE.CanvasTexture(cv);
+  tex.colorSpace = map.colorSpace;
+  tex.flipY = map.flipY;
+  tex.wrapS = map.wrapS;
+  tex.wrapT = map.wrapT;
+  tex.needsUpdate = true;
+  return tex;
+}
+
 function placePool(pool, enemies, dt) {
   for (let i = 0; i < pool.length; i += 1) {
     const slot = pool[i];
@@ -157,9 +205,16 @@ export async function createActors(scene) {
   const slimeSrc = await loadTemplate(CONFIG.enemies.slime.glb, CONFIG.enemies.slime.legacyGlb);
   const slimeGeo = (slimeSrc && largestGeometry(slimeSrc.pivot)) || new THREE.SphereGeometry(0.45, 12, 8);
   const slimeFit = fitGround(slimeGeo, 1.15);
+  slimeGeo.computeBoundingBox();
+  const slimeBox = slimeGeo.boundingBox;
+  const bodyRadius = {
+    slime: Math.max(slimeBox.max.x, -slimeBox.min.x, slimeBox.max.z, -slimeBox.min.z) * slimeFit,
+  };
   const slimeMat = new THREE.MeshToonMaterial({
     color: 0xffffff,
-    map: slimeSrc ? sourceMap(slimeSrc.pivot, slimeGeo) : null,
+    // 贴图先过一遍去色（见 desaturateMap）：变体色是乘上去的，
+    // 留着色相的话紫 × 绿永远是泥绿。
+    map: slimeSrc ? desaturateMap(sourceMap(slimeSrc.pivot, slimeGeo)) : null,
     gradientMap: gradient,
   });
   const slimes = new THREE.InstancedMesh(slimeGeo, slimeMat, CONFIG.spawn.maxAlive);
@@ -173,13 +228,16 @@ export async function createActors(scene) {
   const hounds = [];
   const ogres = [];
   if (houndSrc) {
+    bodyRadius.hound = horizontalRadius(houndSrc.pivot);
     for (let i = 0; i < HOUND_POOL; i += 1) hounds.push(makeRig(houndSrc.pivot, houndSrc.clips, scene));
   }
   if (ogreSrc) {
+    bodyRadius.ogre = horizontalRadius(ogreSrc.pivot);
     for (let i = 0; i < OGRE_POOL; i += 1) ogres.push(makeRig(ogreSrc.pivot, ogreSrc.clips, scene));
   }
 
   const boss = await createBossView();
+  bodyRadius.hese = horizontalRadius(boss.group);
   boss.group.visible = false;
   scene.add(boss.group);
   let bossAnim = '';
@@ -192,6 +250,7 @@ export async function createActors(scene) {
     CONFIG.weapon.pool,
   );
   bullets.frustumCulled = false;
+  for (let i = 0; i < bullets.count; i += 1) bullets.setColorAt(i, color.set(0xf4f7fb));
   scene.add(bullets);
 
   const gems = new THREE.InstancedMesh(
@@ -202,34 +261,124 @@ export async function createActors(scene) {
   gems.frustumCulled = false;
   scene.add(gems);
 
-  const chestRoot = new THREE.Group();
-  const chestMat = [];
-  const chestMesh = [];
-  for (let i = 0; i < CONFIG.chests.max; i += 1) {
-    const mat = new THREE.MeshToonMaterial({ color: 0x1e9be8, gradientMap: gradient });
-    const mesh = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.45, 0.5), mat);
-    mesh.visible = false;
-    chestMat.push(mat);
-    chestMesh.push(mesh);
-    chestRoot.add(mesh);
+  // --- 宝箱（2026-11-17 换成真模型）--------------------------------------
+  //
+  // 上一版是三只 0.7×0.45×0.5 的方盒，靠材质换成类型色。它只能说明
+  // "这里有个盒子可以开"，读不出"这是宝箱"。现在用 rigged_v1 的模型：
+  // 木箱 + 银白包角 + 正面菱形宝石，14172 面，带 Open / Close 两段两骨动画。
+  //
+  // 类型色不能再靠给箱体染色 —— 模型只有一份材质、一份贴图，
+  // 染成蓝色就成了"蓝色的箱子"，不是"蓝色宝石的箱子"。所以信息层拆成两件
+  // 贴在箱子上方的部件：一颗浮起来的菱形宝石 + 地上一圈同色微光。
+  // 宝石对应美术稿里"可换色菱形宝石"，微光对应"光缝"；宝石只做旋转和上下浮动，
+  // 微光只做呼吸，两者都随 type.pulse 走 —— 陷阱箱 0.6 s 的急促呼吸仍然成立。
+  const chestSrc = await loadTemplate(CONFIG.chests.glb, CONFIG.chests.legacyGlb, {
+    autoScale: true,
+    targetHeight: CONFIG.chests.modelHeight,
+  });
+  // 贴图是灰的（实测均色 95,96,91，R=G=B），进场景就是一块灰石头。
+  // 乘一层暖色把它拉回"旧木箱"：0xEFD9BE 只压蓝通道，木色回棕、包角仍是浅灰，
+  // 比直接给整个箱子染类型色温和得多（类型色交给宝石和地面微光）。
+  if (chestSrc) {
+    const warm = new THREE.Color(0xefd9be);
+    chestSrc.pivot.traverse((obj) => {
+      if (!obj.isMesh) return;
+      const list = Array.isArray(obj.material) ? obj.material : [obj.material];
+      list.forEach((mat) => { if (mat && mat.color) mat.color.multiply(warm); });
+    });
   }
+  const chestSlots = [];
+  const chestBoxGeo = new THREE.BoxGeometry(0.7, 0.45, 0.5);
+
+  const gemMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.95 });
+  const chestGems = new THREE.InstancedMesh(
+    new THREE.OctahedronGeometry(0.17, 0),
+    gemMat,
+    CONFIG.chests.max,
+  );
+  chestGems.frustumCulled = false;
+  scene.add(chestGems);
+
+  const glowMat = new THREE.MeshBasicMaterial({
+    color: 0xffffff,
+    transparent: true,
+    opacity: 0.30,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    side: THREE.DoubleSide,
+  });
+  const glowGeo = new THREE.CircleGeometry(0.62, 24);
+  glowGeo.rotateX(-Math.PI / 2);
+  const chestGlows = new THREE.InstancedMesh(glowGeo, glowMat, CONFIG.chests.max);
+  chestGlows.frustumCulled = false;
+  scene.add(chestGlows);
+
+  const chestRoot = new THREE.Group();
   scene.add(chestRoot);
 
+  for (let i = 0; i < CONFIG.chests.max; i += 1) {
+    const group = new THREE.Group();
+    group.visible = false;
+    chestRoot.add(group);
+    let mixer = null;
+    let openAction = null;
+    if (chestSrc) {
+      const model = cloneSkeleton(chestSrc.pivot);
+      group.add(model);
+      mixer = new THREE.AnimationMixer(model);
+      const clip = findClip(chestSrc.clips, 'open');
+      if (clip) {
+        openAction = mixer.clipAction(clip);
+        // 静止姿势就是"关着"。clip 不播的时候骨头停在绑定姿势，正好是关上。
+        openAction.play();
+        openAction.paused = true;
+        openAction.time = 0;
+        mixer.update(0);
+      }
+    } else {
+      const box = new THREE.Mesh(chestBoxGeo, new THREE.MeshToonMaterial({ color: 0x1e9be8, gradientMap: gradient }));
+      box.position.y = 0.225;
+      group.add(box);
+    }
+    chestSlots.push({
+      group,
+      mixer,
+      openAction,
+      ghostT: 0,
+      wasAlive: false,
+      opened: false,
+      x: 0,
+      z: 0,
+    });
+  }
+
+  // 打开动作固定在 0.45 s 内放完（clip 本身 30 帧，按 24 fps 是 1.25 s，
+  // 玩家听到音效到看见箱盖翻起来之间不该隔一秒多）。
+  function beginOpen(slot) {
+    if (!slot.openAction) return;
+    const action = slot.openAction;
+    const dur = action.getClip().duration || 1;
+    action.reset();
+    action.setLoop(THREE.LoopOnce, 1);
+    action.clampWhenFinished = true;
+    action.timeScale = dur / CONFIG.chests.openAnimVisual;
+    action.play();
+  }
+
+  function resetClosed(slot) {
+    if (!slot.openAction) return;
+    slot.openAction.paused = false;
+    slot.openAction.reset();
+    slot.openAction.play();
+    slot.openAction.paused = true;
+    slot.openAction.time = 0;
+    slot.mixer.update(0);
+  }
+
   const tel = CONFIG.boss.telegraph;
-  const telegraph = new THREE.Mesh(
-    new THREE.PlaneGeometry(tel.width, tel.length),
-    new THREE.MeshBasicMaterial({
-      color: tel.color,
-      transparent: true,
-      opacity: tel.alphaStart,
-      depthWrite: false,
-      side: THREE.DoubleSide,
-    }),
-  );
-  telegraph.geometry.translate(0, 0, -tel.length / 2);
-  telegraph.rotation.x = -Math.PI / 2;
-  telegraph.visible = false;
-  scene.add(telegraph);
+  GROUND_STAIN.uStainHalf.value = tel.width * 0.5;
+  GROUND_STAIN.uStainLen.value = tel.length;
+  GROUND_STAIN.uStainColor.value.set(tel.color);
 
   const warnR = CONFIG.chests.types.trap.warnRadius;
   const trapRing = new THREE.Mesh(
@@ -267,12 +416,18 @@ export async function createActors(scene) {
   for (let i = 0; i < bullets.count; i += 1) hideInstance(bullets, i);
   for (let i = 0; i < gems.count; i += 1) hideInstance(gems, i);
   for (let i = 0; i < rings.count; i += 1) hideInstance(rings, i);
+  for (let i = 0; i < chestGems.count; i += 1) hideInstance(chestGems, i);
+  for (let i = 0; i < chestGlows.count; i += 1) hideInstance(chestGlows, i);
   slimes.instanceMatrix.needsUpdate = true;
   bullets.instanceMatrix.needsUpdate = true;
   gems.instanceMatrix.needsUpdate = true;
   rings.instanceMatrix.needsUpdate = true;
 
   return {
+    bodyRadius,
+    // 调试钩子：宝箱模型有没有载入、三个槽位各自在放什么动作。
+    chestSlots,
+    chestLoaded: !!chestSrc,
     update(state, dt) {
       const step = dt * (state.time.scale || 1);
       const enemies = state.enemies;
@@ -317,15 +472,21 @@ export async function createActors(scene) {
         }
         boss.update(step);
         const warn = hese.state === 'warn' || (hese.state === 'dash' && hese.telegraph > 0);
-        telegraph.visible = !!warn;
         if (warn) {
-          telegraph.position.set(hese.x, terrainY(hese.x, hese.z) + tel.y, hese.z);
-          telegraph.rotation.y = Math.atan2(hese.dashDirX, hese.dashDirZ);
-          const left = hese.state === 'warn' ? (1 - hese.stateT / (halfWarn(hese))) : hese.telegraph / 0.2;
-          telegraph.material.opacity = tel.alphaStart + (tel.alphaFill - tel.alphaStart) * (1 - Math.max(0, Math.min(1, left)));
+          const span = Math.hypot(hese.dashDirX, hese.dashDirZ) || 1;
+          GROUND_STAIN.uStainOn.value = 1;
+          GROUND_STAIN.uStainOrigin.value.set(hese.x, hese.z);
+          GROUND_STAIN.uStainDir.value.set(hese.dashDirX / span, hese.dashDirZ / span);
+          const left = hese.state === 'warn' ? (1 - hese.stateT / halfWarn(hese)) : hese.telegraph / 0.2;
+          const fill = 1 - Math.max(0, Math.min(1, left));
+          GROUND_STAIN.uStainAmt.value = 0.72 + 0.2 * fill;
+        } else {
+          GROUND_STAIN.uStainOn.value = 0;
+          GROUND_STAIN.uStainAmt.value = 0;
         }
       } else {
-        telegraph.visible = false;
+        GROUND_STAIN.uStainOn.value = 0;
+        GROUND_STAIN.uStainAmt.value = 0;
         bossAnim = '';
       }
 
@@ -337,11 +498,15 @@ export async function createActors(scene) {
         }
         dummy.position.set(bulletPool.x[i], terrainY(bulletPool.x[i], bulletPool.z[i]) + 0.7, bulletPool.z[i]);
         dummy.rotation.set(0, Math.atan2(bulletPool.vx[i], bulletPool.vz[i]), 0);
-        dummy.scale.set(1, 1, 1);
+        const charged = bulletPool.charge[i] === 1;
+        const scale = charged ? 1.8 : 1;
+        dummy.scale.set(scale, scale, charged ? 2.4 : 1);
         dummy.updateMatrix();
         bullets.setMatrixAt(i, dummy.matrix);
+        bullets.setColorAt(i, color.set(charged ? 0xf5b63c : 0xf4f7fb));
       }
       bullets.instanceMatrix.needsUpdate = true;
+      if (bullets.instanceColor) bullets.instanceColor.needsUpdate = true;
 
       const gemPool = state.gems;
       for (let i = 0; i < gemPool.count; i += 1) {
@@ -358,20 +523,68 @@ export async function createActors(scene) {
       }
       gems.instanceMatrix.needsUpdate = true;
 
-      for (let i = 0; i < chestMesh.length; i += 1) {
+      // 宝箱：模型 + 悬浮宝石 + 地面微光。三个槽位各自一套动作。
+      for (let i = 0; i < chestSlots.length; i += 1) {
+        const slot = chestSlots[i];
         const chest = state.chests[i];
-        const mesh = chestMesh[i];
-        if (!chest || !chest.alive) {
-          mesh.visible = false;
-          continue;
+        const alive = !!(chest && chest.alive);
+        if (alive) {
+          if (!slot.wasAlive) {
+            resetClosed(slot);
+            slot.opened = false;
+            slot.ghostT = 0;
+          }
+          slot.x = chest.x;
+          slot.z = chest.z;
+          slot.group.visible = true;
+          slot.group.position.set(chest.x, terrainY(chest.x, chest.z), chest.z);
+          // 陷阱箱在"开盖之前"先合着：红环在抖，箱盖翻起来是狗出来那一刻。
+          if (!slot.opened && chest.opening && chest.type !== 'trap') {
+            beginOpen(slot);
+            slot.opened = true;
+          }
+        } else if (slot.wasAlive) {
+          // 这一帧刚消失。留一点时间把开盖放完，否则箱子是"啪"一下没的。
+          slot.ghostT = CONFIG.chests.openAnimVisual + 0.15;
+          slot.group.visible = true;
+          beginOpen(slot);
         }
-        const type = CONFIG.chests.types[chest.type] || CONFIG.chests.types.xp;
-        chestMat[i].color.set(type.color);
-        mesh.visible = true;
-        mesh.position.set(chest.x, terrainY(chest.x, chest.z) + 0.28, chest.z);
-        const pulse = 1 + Math.sin(state.time.elapsed * (6.28 / (type.pulse || 1.4))) * 0.06;
-        mesh.scale.setScalar(pulse);
+        if (slot.ghostT > 0) {
+          slot.ghostT -= step;
+          if (slot.ghostT <= 0) slot.group.visible = false;
+        }
+        slot.wasAlive = alive;
+        if (slot.mixer) slot.mixer.update(step);
+
+        if (alive) {
+          const type = CONFIG.chests.types[chest.type] || CONFIG.chests.types.xp;
+          const pulse = 1 + Math.sin(state.time.elapsed * (6.28 / (type.pulse || 1.4))) * 0.10;
+          const gy = terrainY(chest.x, chest.z);
+          // 宝石浮在箱盖上方 0.86 m：58° 俯视下箱体只有 42 px，宝石 10 px，
+          // 再加上下面那圈同色微光，类型才在"看一眼"的尺度上读得出来。
+          dummy.position.set(chest.x, gy + 0.86 + Math.sin(state.time.elapsed * 1.8 + i) * 0.05, chest.z);
+          dummy.rotation.set(0, state.time.elapsed * 1.6 + i, 0);
+          dummy.scale.set(1, 1.35, 1);
+          dummy.updateMatrix();
+          chestGems.setMatrixAt(i, dummy.matrix);
+          color.set(type.color);
+          chestGems.setColorAt(i, color);
+
+          dummy.position.set(chest.x, gy + 0.018, chest.z);
+          dummy.rotation.set(0, 0, 0);
+          dummy.scale.set(pulse, 1, pulse);
+          dummy.updateMatrix();
+          chestGlows.setMatrixAt(i, dummy.matrix);
+          chestGlows.setColorAt(i, color);
+        } else {
+          hideInstance(chestGems, i);
+          hideInstance(chestGlows, i);
+        }
       }
+      chestGems.instanceMatrix.needsUpdate = true;
+      if (chestGems.instanceColor) chestGems.instanceColor.needsUpdate = true;
+      chestGlows.instanceMatrix.needsUpdate = true;
+      if (chestGlows.instanceColor) chestGlows.instanceColor.needsUpdate = true;
       const trap = state.chests.find((chest) => chest.alive && chest.opening && chest.type === 'trap');
       trapRing.visible = !!trap;
       if (trap) trapRing.position.set(trap.x, terrainY(trap.x, trap.z) + 0.08, trap.z);

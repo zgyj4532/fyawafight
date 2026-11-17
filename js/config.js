@@ -57,7 +57,7 @@ export const CONFIG = freeze({
     radius: 0.45,
     height: 1.5,
     hp: 100,
-    spd: 5,
+    spd: 7.5,
     atk: 10,
     aspd: 1.5,
     def: 0,
@@ -67,7 +67,7 @@ export const CONFIG = freeze({
     pierce: 0,
     caps: {
       hp: 300,
-      spd: 8,
+      spd: 12,
       atk: 40,
       aspd: 4,
       def: 30,
@@ -90,11 +90,16 @@ export const CONFIG = freeze({
     accel: 40,
     decel: 55,
     turnDamp: 12,
-    slowMul: 0.45,
-    roll: { duration: 0.35, cooldown: 2 },
-    // 土路提速。乘在 spd 之上、roll 的 1.2 之前，和现有的 speedBuff 同类叠乘。
-    // 1.18 相当于把 5.0 抬到 5.9，能跑赢猎狗的 4.2，但赢不了冲刺的 5.04。
-    path: { speedMul: 1.18, blendRate: 11 },
+    slowMul: 0.3,
+    roll: { duration: 0.35, cooldown: 2, speedMul: 1.6 },
+    // 土路提速。乘在 spd 之上、翻滚之前，和现有的 speedBuff 同类叠乘。
+    // 基础移速已是 7.5。1.18 再把路面抬到约 8.9。
+    //
+    // 横路（2026-11-17 加的十字路口那条）单独给 1.25，比主路高。理由不是数值好看：
+    // 主路是「顺着走」的路，横路是「绕远」的路 —— 玩家为了拿全三段文书要横穿一次，
+    // 这条路得比主路更值得踩，绕这一趟才不是纯亏。两条路取最大值，不叠乘，
+    // 路口重叠处不会变成 1.18×1.25。
+    path: { speedMul: 1.18, crossSpeedMul: 1.25, blendRate: 11 },
     portal: {
       cooldown: 1,
       inset: 0.5,
@@ -133,6 +138,9 @@ export const CONFIG = freeze({
     knockback: 0.15,
     hitFlash: 0.08,
     outOfBounds: 'destroy',
+    // 按住 Shift 满 2 秒，松开打出这一发。101 覆盖精英蓝史莱姆 42 × 2.4。
+    chargeHold: 2,
+    chargeDamage: 101,
   },
 
   gems: {
@@ -140,9 +148,10 @@ export const CONFIG = freeze({
   },
 
   spawn: {
-    basePerSec: 0.7,
-    perMinute: 0.5,
-    capPerSec: 3.2,
+    // 蓄力加入后难度掉了，退回减半那一档。开局 0.35 只/秒，每过一分钟 +0.25，封顶 1.6。
+    basePerSec: 0.35,
+    perMinute: 0.25,
+    capPerSec: 1.6,
     ringMin: 14,
     ringMax: 18,
     rejectWithin: 12,
@@ -181,7 +190,7 @@ export const CONFIG = freeze({
       id: 'mid',
       start: 100,
       end: 180,
-      weights: { slime: 3, hound: 2, ogre: 0 },
+      weights: { slime: 3, hound: 1, ogre: 0 },
       elite: true,
       rateScale: 1,
     },
@@ -189,7 +198,7 @@ export const CONFIG = freeze({
       id: 'late',
       start: 180,
       end: 260,
-      weights: { slime: 3, hound: 2, ogre: 0 },
+      weights: { slime: 3, hound: 1, ogre: 0 },
       elite: true,
       rateScale: 1,
     },
@@ -197,7 +206,7 @@ export const CONFIG = freeze({
       id: 'late-prep',
       start: 260,
       end: 300,
-      weights: { slime: 3, hound: 2, ogre: 0 },
+      weights: { slime: 3, hound: 1, ogre: 0 },
       elite: true,
       rateScale: 0.3,
       forceChest: 'health',
@@ -206,7 +215,7 @@ export const CONFIG = freeze({
       id: 'boss',
       start: 300,
       end: null,
-      weights: { slime: 3, hound: 2, ogre: 0 },
+      weights: { slime: 3, hound: 1, ogre: 0 },
       elite: false,
       rateScale: 0.4,
       boss: 'hese',
@@ -230,7 +239,7 @@ export const CONFIG = freeze({
       id: 'slime',
       name: '史莱姆',
       color: '#6E4AA8',
-      hp: 40,
+      hp: 24,
       speed: 1.6,
       contact: 10,
       radius: 0.7,
@@ -238,15 +247,15 @@ export const CONFIG = freeze({
       hopEvery: 1.2,
       render: 'instanced',
       wraps: true,
-      glb: 'models/rigged_v1/slime_rigged_v1.glb',
-      legacyGlb: 'models/enemies/slime.glb',
+      glb: 'models/active/enemies/slime_rigged_v1.glb',
+      legacyGlb: 'models/active/enemies/legacy/slime.glb',
       targetHeight: null,
     },
     hound: {
       id: 'hound',
       name: '猎狗',
       color: '#C69A4B',
-      hp: 70,
+      hp: 42,
       speed: 4.2,
       contact: 12,
       radius: 0.6,
@@ -255,8 +264,8 @@ export const CONFIG = freeze({
       sprintMul: 1.2,
       render: 'skinned',
       wraps: true,
-      glb: 'models/rigged_v1/hound_rigged_v1.glb',
-      legacyGlb: 'models/enemies/hound.glb',
+      glb: 'models/active/enemies/hound_rigged_v1.glb',
+      legacyGlb: 'models/active/enemies/legacy/hound.glb',
       targetHeight: null,
     },
     ogre: {
@@ -272,8 +281,8 @@ export const CONFIG = freeze({
       separation: 1.2,
       render: 'skinned',
       wraps: true,
-      glb: 'models/rigged_v1/ogre_rigged_v1.glb',
-      legacyGlb: 'models/enemies/orge.glb',
+      glb: 'models/active/enemies/ogre_rigged_v1.glb',
+      legacyGlb: 'models/active/enemies/legacy/orge.glb',
       targetHeight: null,
     },
   },
@@ -283,9 +292,11 @@ export const CONFIG = freeze({
     enabled: true,
     replaceWithin: 'slime',
     referenceColor: '#6E4AA8',
-    red: { id: 'red', intensity: 'high', weight: 1, color: '#B95645', hp: 30, speed: 2.2, contact: 16, radius: 0.6, xp: 3 },
-    blue: { id: 'blue', intensity: 'mid', weight: 2, color: '#4C83BD', hp: 70, speed: 1.2, contact: 12, radius: 0.8, xp: 3 },
-    green: { id: 'green', intensity: 'low', weight: 3, color: '#659B4A', hp: 40, speed: 1.6, contact: 10, radius: 0.7, xp: 2 },
+    red: { id: 'red', intensity: 'high', weight: 1, color: '#B95645', hp: 18, speed: 2.2, contact: 16, radius: 0.6, xp: 3 },
+    blue: { id: 'blue', intensity: 'mid', weight: 2, color: '#4C83BD', hp: 42, speed: 1.2, contact: 12, radius: 0.8, xp: 3 },
+    // 2026-11-17：原来是 #659B4A（橄榄绿）。Toon 着色只有 8 档，暗面再压一档，
+    // 屏幕上看就是墨绿，和「浅绿的小史莱姆」不是一回事。提到 #A6E36A。
+    green: { id: 'green', intensity: 'low', weight: 3, color: '#A6E36A', hp: 24, speed: 1.6, contact: 10, radius: 0.7, xp: 2 },
   },
 
   boss: {
@@ -304,8 +315,8 @@ export const CONFIG = freeze({
     hpSegments: 4,
     render: 'skinned',
     wraps: false,
-    glb: 'models/rigged_v1/boss_knight_rigged_v1.glb',
-    legacyGlb: 'models/enemies/boss_knight.glb',
+    glb: 'models/active/enemies/boss_knight_rigged_v1.glb',
+    legacyGlb: 'models/active/enemies/legacy/boss_knight.glb',
     targetHeight: 1.8,
     idle: 1.5,
     recover: 1.5,
@@ -355,8 +366,14 @@ export const CONFIG = freeze({
       rare: { weight: 0.15, color: '#F5B63C', pulse: 1.4, xpRatio: 0.5, disguise: false, grantUpgrade: 1 },
       trap: { color: '#E8455C', pulse: 0.6, xpRatio: 0, hounds: 3, warnRadius: 3, warnTime: 0.5, countsKill: false },
     },
-    glb: 'models/rigged_v1/chest_rigged_v1.glb',
-    legacyGlb: 'models/enemies/chest.glb',
+    glb: 'models/active/enemies/chest_rigged_v1.glb',
+    legacyGlb: 'models/active/enemies/legacy/chest.glb',
+    // 模型归一化到 0.62 m 高（原始 0.38 × 0.45 × 0.43，等比放大 1.63 倍后
+    // 0.73 宽 × 0.70 深）。0.62 是按"玩家 1.58 m、箱子到膝盖上面"定的。
+    modelHeight: 0.62,
+    // 箱盖从关到开放在 0.45 s 内。clip 本身 30 帧（24 fps 计 1.25 s），
+    // 按 1.25 s 播完的话，玩家听到音效到看见盖子翻起来之间隔得太久。
+    openAnimVisual: 0.45,
   },
 
   upgrades: {
@@ -376,16 +393,16 @@ export const CONFIG = freeze({
   },
 
   hero: {
-    glb: 'models/rigged_v1/protagonist_rigged_v1.glb',
-    legacyGlb: 'models/fyagent_hero_g1_1024.glb',
-    targetHeight: 1.5,
+    glb: 'models/active/hero/hero.glb',   // 2026-11-17 重绑：头发按连通片整体绑 Head（刚体），24.7 MB
+    legacyGlb: 'models/active/hero/hero_fallback_v3.glb',
+    targetHeight: 1.58,   // 新模型比例更实，旧的糊块视觉上虚胖；这里补一点让主角在画面里不缩小
     clips: {
       idle: 'idle|stand',
       run: 'moveforward|run|jog|walk',
     },
     separateAnims: {
-      idle: 'models/anim_Idle_Loop.glb',
-      jog: 'models/anim_Jog_Fwd_Loop.glb',
+      idle: 'models/active/anim/Idle_Loop.glb',
+      jog: 'models/active/anim/Jog_Fwd_Loop.glb',
     },
   },
 

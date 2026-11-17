@@ -8,7 +8,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { createToonGradientMap } from './pipeline.js';
-import { pathCenterZ, pathSlope, terrainY } from './path.js';
+import { pathCenterZ, pathSlope, crossCenterX, crossSlope, terrainY } from './path.js';
 import { PROP_COLLIDERS } from './collision-data.js';
 import { registerAsset } from './collision.js';
 
@@ -171,30 +171,164 @@ const BUILDERS = {
 // 里程点。x 沿路，side 决定左右（+1 是靠近镜头那一侧），lateral 是离中心线的横向距离。
 // 尺寸按机位反推过：俯角 58° 把竖直方向压到约 0.53，1 m 高的东西只有半米观感高度，
 // 所以低于 1 m 的道具在这次改版里全部抬高了。
+//
+// 2026-11-17 按「道具之间的净空」重新排过一次。怪物没有寻路，撞到挡块的解法是
+// 沿切向滑开（js/ai.js 的 moveBody + clipVelocity）——两件挡块之间留 1 m 的缝，
+// 体型 1.4 m 的史莱姆会卡在缝口、来回被两边推开，看上去就是"卡位"。
+// 所以同一侧相邻道具的净空一律拉到 1.6 m 以上，实测最窄的一处（断墙与里程碑）
+// 原来是 0.12 m，等于两件东西焊成一件。间距清单见 docs/地形_十字路口.md。
 const LAYOUT = [
   // 出生点四周：玩家一睁眼就能看到栅栏、路标和里程碑
   { x: -8.0, side: -1, kind: 'fence', sections: 4, lateral: 2.95 },
-  { x: -2.0, side: -1, kind: 'signpost', lateral: 2.85 },
+  // 路标原来在 −2.0，正好戳在栅栏（−8…+2.5）中间。挪到栅栏东头之外。
+  { x: 5.2, side: -1, kind: 'signpost', lateral: 2.85 },
   { x: 3.0, side: 1, kind: 'milestone', lateral: 2.55 },
-  { x: 9.0, side: 1, kind: 'cart', lateral: 2.75 },
-  { x: 10.6, side: 1, kind: 'barrel', lateral: 2.60 },
-  { x: 12.2, side: 1, kind: 'crate', lateral: 3.05 },
+  // 车、桶、箱原来挤在 9.0 / 10.6 / 12.2：桶整个落在车的碰撞盒里。
+  { x: 8.8, side: 1, kind: 'cart', lateral: 2.75 },
+  { x: 12.4, side: 1, kind: 'barrel', lateral: 2.60 },
+  { x: 15.2, side: 1, kind: 'crate', lateral: 3.05 },
   { x: 16.0, side: -1, kind: 'cairn', lateral: 3.05 },
   { x: 22.0, side: 1, kind: 'fence', sections: 3, lateral: 2.90 },
-  { x: 26.0, side: -1, kind: 'hay', lateral: 3.40 },
-  { x: 28.5, side: -1, kind: 'crate', lateral: 2.80 },
-  { x: 34.0, side: 1, kind: 'wall', lateral: 3.15 },
+  { x: 26.4, side: -1, kind: 'hay', lateral: 3.40 },
+  { x: 29.4, side: -1, kind: 'crate', lateral: 2.80 },
+  // 断墙的碰撞盒向 +x 伸出 2.1 m，所以它自己往西挪，里程碑留在原位。
+  { x: 31.8, side: 1, kind: 'wall', lateral: 3.15 },
   { x: 36.5, side: 1, kind: 'milestone', lateral: 2.55 },
   { x: 44.0, side: -1, kind: 'barrel', lateral: 2.65 },
   { x: 48.0, side: -1, kind: 'cairn', lateral: 3.00 },
   { x: -14.0, side: 1, kind: 'cart', lateral: 2.80 },
-  { x: -16.2, side: 1, kind: 'crate', lateral: 3.10 },
-  { x: -22.0, side: -1, kind: 'fence', sections: 3, lateral: 2.95 },
-  { x: -26.0, side: -1, kind: 'hay', lateral: 3.35 },
-  { x: -32.0, side: 1, kind: 'wall', lateral: 3.10 },
+  { x: -18.6, side: 1, kind: 'crate', lateral: 3.10 },
+  { x: -19.4, side: -1, kind: 'fence', sections: 3, lateral: 2.95 },
+  { x: -28.0, side: -1, kind: 'hay', lateral: 3.35 },
+  { x: -29.2, side: 1, kind: 'wall', lateral: 3.10 },
   { x: -38.0, side: 1, kind: 'barrel', lateral: 2.60 },
   { x: -44.0, side: -1, kind: 'signpost', lateral: 2.80 },
   { x: -52.0, side: -1, kind: 'milestone', lateral: 2.60 },
+];
+
+// 横路（十字路口那条，见 js/path.js 的 CROSS）的陈设。
+// 里程是 z，side 决定在路的哪一侧（+1 是 +x 侧），lateral 是离横路中心线的米数。
+//
+// 为什么横路也要摆东西：主路的陈设全部贴着主路，地图南北两端（世界 z 的两头）
+// 是三百多平方米什么都没有的草地。玩家试探着往那边走，看到的只有草。
+// 这条横路把"空白"变成"还有一条路可以走"，路边自然就该有东西。
+//
+// 路口两侧各留 6 m 不放：那是十字路口本身，放什么都挡视线。
+// 同一侧沿 z 的间距 ≥ 3 m —— 理由同主路，怪物没有寻路。
+//
+// **横路上不放栅栏和断墙。** 这两件是沿局部 +x 展开的长条（2.7 m / 4.1 m），
+// 而横路的方向是世界 z、和视线平行：栅栏顺着路摆就是一排柱子对着镜头，
+// 栏杆退化成一条 1 px 的线，远看只剩几根杵在地上的木棍（第一版就是这样）。
+// 长条道具只在主路上用 —— 那是横着看的。横路这一档只放团块状的：
+// 桶、箱、石堆、干草、里程碑、路标、手推车。
+const CROSS_LAYOUT = [
+  // 南段（z < −12）。按「每 10–14 m 一处小站」组织，左右交错，
+  // 每一处 2–4 件围成一个小景（货堆 / 路标 / 车 / 石堆），不再是一件一件散着摆。
+  //
+  // 间距不是随手写的：同侧的净空要 ≥ 两件自身的半长之和 + 一点缝。
+  // 上一版把 cart（2.5 m 长）和旁边的桶放在 z 差 1.6 m 处，实测边到边只剩
+  // **0.029 m** —— 视觉上粘成一坨，tank 的碰撞盒还互相嵌。所以凡是 cart 旁边，
+  // 同侧一律留到 3.5 m；hay（半径 1.1）旁边留 1.8 m；小件之间 1.5–1.8 m。
+  { z: -55.0, side: -1, kind: 'milestone', lateral: 2.65 },
+  { z: -53.2, side: 1, kind: 'crate', lateral: 2.90 },
+  { z: -51.4, side: 1, kind: 'barrel', lateral: 3.40 },
+  { z: -48.0, side: -1, kind: 'hay', lateral: 3.40 },
+  { z: -46.2, side: -1, kind: 'barrel', lateral: 2.80 },
+  { z: -42.5, side: 1, kind: 'cart', lateral: 3.00 },
+  { z: -39.0, side: 1, kind: 'crate', lateral: 2.80 },
+  { z: -36.5, side: -1, kind: 'signpost', lateral: 2.90 },
+  { z: -35.0, side: -1, kind: 'milestone', lateral: 2.60 },
+  { z: -31.5, side: 1, kind: 'cairn', lateral: 3.10 },
+  { z: -29.8, side: 1, kind: 'barrel', lateral: 2.80 },
+  { z: -26.0, side: -1, kind: 'hay', lateral: 3.40 },
+  { z: -24.2, side: -1, kind: 'crate', lateral: 3.00 },
+  { z: -20.5, side: 1, kind: 'cart', lateral: 3.10 },
+  { z: -17.0, side: 1, kind: 'barrel', lateral: 2.80 },
+  { z: -14.0, side: -1, kind: 'cairn', lateral: 3.10 },
+  { z: -12.4, side: -1, kind: 'crate', lateral: 2.90 },
+  // 北段（z > +2）
+  { z: 4.0, side: -1, kind: 'barrel', lateral: 2.75 },
+  { z: 6.5, side: 1, kind: 'crate', lateral: 2.95 },
+  { z: 8.2, side: 1, kind: 'barrel', lateral: 3.35 },
+  { z: 11.0, side: -1, kind: 'hay', lateral: 3.40 },
+  { z: 12.8, side: 1, kind: 'milestone', lateral: 2.60 },
+  { z: 14.5, side: 1, kind: 'signpost', lateral: 2.90 },
+  { z: 18.0, side: -1, kind: 'cart', lateral: 3.05 },
+  { z: 21.5, side: -1, kind: 'crate', lateral: 2.85 },
+  { z: 24.5, side: 1, kind: 'cairn', lateral: 3.10 },
+  { z: 26.2, side: 1, kind: 'barrel', lateral: 2.80 },
+  { z: 29.0, side: -1, kind: 'hay', lateral: 3.40 },
+  { z: 30.8, side: -1, kind: 'crate', lateral: 2.95 },
+  { z: 34.5, side: 1, kind: 'cart', lateral: 3.10 },
+  { z: 38.0, side: 1, kind: 'barrel', lateral: 2.80 },
+  { z: 41.0, side: -1, kind: 'cairn', lateral: 3.10 },
+  { z: 42.8, side: -1, kind: 'barrel', lateral: 2.85 },
+  { z: 46.0, side: 1, kind: 'milestone', lateral: 2.60 },
+  { z: 47.5, side: 1, kind: 'signpost', lateral: 2.90 },
+  { z: 51.0, side: -1, kind: 'cart', lateral: 3.05 },
+  { z: 54.5, side: -1, kind: 'hay', lateral: 3.40 },
+  { z: 56.5, side: 1, kind: 'crate', lateral: 2.90 },
+];
+
+// 路面上的货：**撤掉了**（2026-11-17 晚第二版）。
+//
+// 上一版在这里放了 9 件，横向 1.15–1.50 m，想读作「运输队掉下来的货」。
+// 实测下来它两边不讨好：
+//   · 通行带体检（tools/probe_cross_walk.mjs）显示，路心点到最近的箱边只剩
+//     **0.82 m** —— 玩家半径 0.45，实际余量 0.37 m。沿路心还能走，但两侧被挤死，
+//     第一眼就是「路上堆着东西挡道」；
+//   · 9 件撒在 111 m 的路上，平均 12 m 一件，仍然读不出「有货」，只读得出「乱」。
+//
+// 结论：路面应该**干净**，丰富度交给两侧。人群靠密度和成组，不靠占道。
+// 想留「出过事」的味道，就把这件事做成一整组（车 + 散箱 + 桶），放在路肩，
+// 而不是把单件撒到路中间。这一版先按干净的运输大道处理。
+
+// --- 四角 ---------------------------------------------------------------
+//
+// 玩家说「地图左上、右上、左下、右下都没有障碍物，不够丰富」。
+// 之前所有陈设都沿着两条路铺，四个角是三百多平方米的纯草地 —— 站在路口斜看，
+// 画面四角就是一片什么都没有的绿。
+//
+// 四角各给一个**不同的主题**，用现有的道具搭（不新增 GLB）：
+//   西北 · 古战场残迹 —— 断墙成 L 形，石堆当坟，枯树补轮廓
+//   东北 · 伐木营地   —— 车、木堆、围栏，读作有人在这里干过活
+//   西南 · 沼泽枯林   —— 枯树 + 石堆，最荒的一角
+//   东南 · 废弃农舍   —— 两段墙 + 干草 + 车，是被丢下的院子
+//
+// 坐标系：这里直接用世界坐标（wx / wz），不走「里程 + lateral」——
+// 四角不在任何一条路上，硬套路的坐标系只会让数字变得看不懂。
+// 道具朝向 yaw 是绕 Y 轴的角度，长条件（墙 / 围栏）要自己定，别让它们
+// 顺着视线摆（理由同横路不放栅栏：顺着视线会退化成一根柱子）。
+const WILDS = [
+  // 西北 · 古战场残迹（约 −44, −44）
+  { wx: -47.0, wz: -44.0, kind: 'wall', yaw: 0.35, shadow: true },
+  { wx: -44.5, wz: -46.8, kind: 'wall', yaw: 1.92, shadow: true },
+  { wx: -43.0, wz: -42.2, kind: 'cairn', yaw: 0.0, shadow: true },
+  { wx: -46.8, wz: -40.6, kind: 'cairn', yaw: 1.1, shadow: true },
+  { wx: -41.2, wz: -45.4, kind: 'barrel', yaw: 0.0, shadow: true },
+  { wx: -42.4, wz: -39.4, kind: 'crate', yaw: 0.6, shadow: true },
+
+  // 东北 · 伐木营地（约 44, −42）
+  { wx: 41.5, wz: -44.5, kind: 'cart', yaw: 0.9, shadow: true },
+  { wx: 44.2, wz: -42.0, kind: 'crate', yaw: 0.0, shadow: true },
+  { wx: 45.0, wz: -40.4, kind: 'crate', yaw: 0.55, shadow: true },
+  { wx: 46.4, wz: -44.0, kind: 'barrel', yaw: 0.0, shadow: true },
+  { wx: 43.0, wz: -47.2, kind: 'hay', yaw: 0.3, shadow: true },
+  { wx: 39.6, wz: -41.2, kind: 'fence', yaw: -0.42, sections: 2, shadow: true },
+
+  // 西南 · 沼泽枯林（约 −42, 44）
+  { wx: -45.5, wz: 42.0, kind: 'cairn', yaw: 0.8, shadow: true },
+  { wx: -43.0, wz: 45.6, kind: 'cairn', yaw: 0.0, shadow: true },
+  { wx: -40.2, wz: 41.4, kind: 'barrel', yaw: 0.0, shadow: true },
+  { wx: -46.4, wz: 46.8, kind: 'crate', yaw: 0.9, shadow: true },
+
+  // 东南 · 废弃农舍（约 42, 42）
+  { wx: 43.5, wz: 41.0, kind: 'wall', yaw: 0.18, shadow: true },
+  { wx: 45.2, wz: 44.6, kind: 'wall', yaw: 1.75, shadow: true },
+  { wx: 41.2, wz: 44.2, kind: 'hay', yaw: 0.5, shadow: true },
+  { wx: 46.4, wz: 42.4, kind: 'barrel', yaw: 0.0, shadow: true },
+  { wx: 38.6, wz: 39.4, kind: 'cart', yaw: -0.7, shadow: true },
+  { wx: 44.0, wz: 47.4, kind: 'crate', yaw: 0.25, shadow: true },
 ];
 
 const SHADOW_Y = 0.010;
@@ -226,43 +360,85 @@ export function createRoadProps() {
   const matrix = new THREE.Matrix4();
   const euler = new THREE.Euler();
 
+  // 先把两条路的道具摊成同一串「世界坐标 + 偏航」，后面只有一份构建代码。
+  const placed = [];
+
   LAYOUT.forEach((item) => {
     const s0 = pathSlope(item.x);
     const len0 = Math.sqrt(1 + s0 * s0);
     const lateral = item.lateral * item.side;
     const sections = item.sections || 1;
-
-    const [shadowR, shadowS] = SHADOW[item.kind] || [0.8, 0.82];
-    const shadow = shadowDisc(shadowR, shadowS);
-
     for (let i = 0; i < sections; i += 1) {
       // 栅栏要顺着路铺开：按弧长一段一段往前走，不能沿 x 简单平移。
       const x = item.x + (i * 2.6) / len0;
       const s = pathSlope(x);
       const len = Math.sqrt(1 + s * s);
-      const cx = x + (-s / len) * lateral;
-      const cz = pathCenterZ(x) + (1 / len) * lateral;
-      const yawI = -Math.atan(s);
-      const prop = PROP_COLLIDERS[item.kind];
-      if (prop) registerAsset(item.kind, cx, cz, yawI, prop);
-
-      const local = [];
-      BUILDERS[item.kind](local);
-      euler.set(0, yawI, 0);
-      matrix.makeRotationFromEuler(euler);
-      // 路基被小山丘垫起来了，道具必须踩在同一层地面上。
-      matrix.setPosition(cx, terrainY(cx, cz), cz);
-      local.forEach((g) => {
-        g.applyMatrix4(matrix);
-        solids.push(g);
+      placed.push({
+        kind: item.kind,
+        cx: x + (-s / len) * lateral,
+        cz: pathCenterZ(x) + (1 / len) * lateral,
+        yaw: -Math.atan(s),
+        shadow: i === 0,
       });
+    }
+  });
 
-      if (i === 0) {
-        const quad = shadow.clone();
-        quad.translate(0, SHADOW_Y, 0);
-        quad.applyMatrix4(matrix);
-        shadows.push(quad);
-      }
+  CROSS_LAYOUT.forEach((item) => {
+    const sections = item.sections || 1;
+    const lateral = item.lateral * item.side;
+    for (let i = 0; i < sections; i += 1) {
+      // 横路的里程是 z，切线是 (s, 1)/len，所以「往下一段走」是把 z 加大。
+      const z = item.z + (i * 2.6) / Math.sqrt(1 + crossSlope(item.z) ** 2);
+      const s = crossSlope(z);
+      const len = Math.sqrt(1 + s * s);
+      placed.push({
+        kind: item.kind,
+        cx: crossCenterX(z) + (1 / len) * lateral,
+        cz: z + (-s / len) * lateral,
+        // 局部 +x 要对准横路的切线：θ = −π/2 + atan(s)。
+        yaw: -Math.PI / 2 + Math.atan(s),
+        shadow: i === 0,
+      });
+    }
+  });
+
+  // 四角生态：世界坐标直摆。长条件（墙 / 围栏）用 sections 沿自己的局部 +x
+  // 往前走 2.6 m —— three.js 绕 Y 转 yaw 之后，局部 +x 在世界里是 (cos, −sin)。
+  WILDS.forEach((item) => {
+    const sections = item.sections || 1;
+    for (let i = 0; i < sections; i += 1) {
+      placed.push({
+        kind: item.kind,
+        cx: item.wx + i * 2.6 * Math.cos(item.yaw),
+        cz: item.wz - i * 2.6 * Math.sin(item.yaw),
+        yaw: item.yaw,
+        shadow: i === 0,
+      });
+    }
+  });
+
+  placed.forEach((spot) => {
+    const { kind, cx, cz, yaw } = spot;
+    const prop = PROP_COLLIDERS[kind];
+    if (prop) registerAsset(kind, cx, cz, yaw, prop);
+
+    const local = [];
+    BUILDERS[kind](local);
+    euler.set(0, yaw, 0);
+    matrix.makeRotationFromEuler(euler);
+    // 路基被小山丘垫起来了，道具必须踩在同一层地面上。
+    matrix.setPosition(cx, terrainY(cx, cz), cz);
+    local.forEach((g) => {
+      g.applyMatrix4(matrix);
+      solids.push(g);
+    });
+
+    if (spot.shadow) {
+      const [shadowR, shadowS] = SHADOW[kind] || [0.8, 0.82];
+      const quad = shadowDisc(shadowR, shadowS);
+      quad.translate(0, SHADOW_Y, 0);
+      quad.applyMatrix4(matrix);
+      shadows.push(quad);
     }
   });
 

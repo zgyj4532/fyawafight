@@ -391,7 +391,10 @@ export function clipVelocity(vx, vz, pushX, pushZ) {
   return vel;
 }
 
-function clearanceAt(px, pz) {
+// 点到最近碰撞形状**边缘**的距离；点在形状里面时是负数。
+// 给构建期用（灌木避让：别把灌木种在树干里、墙里、箱子里）。
+// assertClearances 用它判门洞是否被堵；scenery.js 用它筛灌木。
+export function clearanceAt(px, pz) {
   let best = Infinity;
   for (let i = 0; i < circles.length; i += 1) {
     const item = circles[i];

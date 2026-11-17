@@ -4,17 +4,23 @@
 import * as THREE from 'three';
 import { CONFIG } from './config.js';
 import { createGrassField } from './grass.js';
-import { createDirtPath, terrainY } from './path.js';
+import { bindGroundZones } from './zones.js';
+import { createZoneAmbience } from './ambience.js';
+import {
+  bindGroundStain, createDirtPath, crossDistance, pathDistance, terrainY,
+} from './path.js';
 import { createRoadProps } from './props.js';
 import { createNarrativeScenery } from './narrative.js';
+import { createLandmarks } from './landmarks.js';
 import { createEvidence } from './evidence.js';
 import { createScenery } from './scenery.js';
 import { createBorderFX } from './borderfx.js';
 import { createBossView } from './bossview.js';
 import { createActors } from './actors.js';
-import { applyUpgrade } from './combat.js';
+import { applyUpgrade, levelCost } from './combat.js';
+import { documentFor } from './documents.js';
 import { resetRun } from './state.js';
-import { assertClearances, colliderStats, debugSegmentCount, writeDebugXZ } from './collision.js';
+import { assertClearances, colliderStats, debugSegmentCount, debugShapes, writeDebugXZ } from './collision.js';
 import {
   createFallbackMesh,
   createSynth,
@@ -36,9 +42,14 @@ function dom() {
   hud.stick = document.getElementById('joystick');
   hud.nub = document.getElementById('stick');
   hud.pause = document.getElementById('pause');
+  hud.pauseStats = document.getElementById('pause-stats');
+  hud.charge = document.getElementById('charge');
+  hud.chargeFill = document.getElementById('charge-fill');
+  hud.chargeLabel = document.getElementById('charge-label');
   hud.note = document.getElementById('boot-note');
   hud.root = document.getElementById('hud');
   hud.menu = document.getElementById('menu');
+  hud.menuCopy = document.getElementById('menu-copy');
   hud.howto = document.getElementById('howto');
   hud.start = document.getElementById('btn-start');
   hud.howtoOpen = document.getElementById('btn-howto');
@@ -58,6 +69,12 @@ function dom() {
   hud.doc = document.getElementById('doc');
   hud.docHint = document.getElementById('doc-hint');
   hud.docKey = document.getElementById('doc-key');
+  hud.docOffice = document.getElementById('doc-office');
+  hud.docTitle = document.getElementById('doc-title');
+  hud.docMeta = document.getElementById('doc-meta');
+  hud.docBody = document.getElementById('doc-body');
+  hud.docSign = document.getElementById('doc-sign');
+  hud.docSeal = document.getElementById('doc-seal');
   hud.settings = document.getElementById('settings');
   hud.settingsOpen = document.getElementById('btn-settings');
   hud.settingsBack = document.getElementById('btn-settings-back');
@@ -70,17 +87,35 @@ function dom() {
   return hud;
 }
 
+function openSheet(state, name) {
+  const nodes = dom();
+  const inRun = state.phase === 'play' || state.phase === 'result';
+  if (name === 'settings') {
+    state.ui.settings = true;
+    if (!inRun) state.phase = 'menu';
+  } else if (name === 'howto') {
+    if (inRun) return;
+    state.ui.settings = false;
+    state.phase = 'howto';
+  } else {
+    state.ui.settings = false;
+    if (state.phase === 'howto') state.phase = 'menu';
+  }
+  if (!inRun && nodes.menuCopy) nodes.menuCopy.hidden = state.phase === 'howto' || state.ui.settings;
+  if (nodes.howto) nodes.howto.hidden = state.phase !== 'howto';
+  if (nodes.settings) {
+    nodes.settings.hidden = !state.ui.settings;
+    nodes.settings.classList.toggle('over-cover', !inRun && state.ui.settings);
+  }
+}
+
 function bindMenu(state) {
   const nodes = dom();
   if (nodes.menuBound) return;
   nodes.menuBound = true;
   nodes.start.addEventListener('click', () => startGame(state));
-  nodes.howtoOpen.addEventListener('click', () => {
-    state.phase = 'howto';
-  });
-  nodes.howtoBack.addEventListener('click', () => {
-    state.phase = 'menu';
-  });
+  nodes.howtoOpen.addEventListener('click', () => openSheet(state, 'howto'));
+  nodes.howtoBack.addEventListener('click', () => openSheet(state, ''));
   if (nodes.retry) nodes.retry.addEventListener('click', () => startGame(state));
   nodes.cards.forEach((card, i) => {
     card.addEventListener('click', () => {
@@ -90,19 +125,13 @@ function bindMenu(state) {
     });
   });
   if (nodes.settingsOpen) {
-    nodes.settingsOpen.addEventListener('click', () => {
-      state.ui.settings = true;
-    });
+    nodes.settingsOpen.addEventListener('click', () => openSheet(state, 'settings'));
   }
   if (nodes.pauseSettings) {
-    nodes.pauseSettings.addEventListener('click', () => {
-      state.ui.settings = true;
-    });
+    nodes.pauseSettings.addEventListener('click', () => openSheet(state, 'settings'));
   }
   if (nodes.settingsBack) {
-    nodes.settingsBack.addEventListener('click', () => {
-      state.ui.settings = false;
-    });
+    nodes.settingsBack.addEventListener('click', () => openSheet(state, ''));
   }
   document.querySelectorAll('#settings [data-tab]').forEach((button) => {
     button.addEventListener('click', () => {
@@ -163,7 +192,7 @@ function startGame(state) {
 // 草地基底只提供从草叶缝隙里透出来的色温，不承担细节——
 // 在 69 px/m 的机位下，贴图里小于 2 cm 的东西都会被 mipmap 抹平。
 function groundTexture() {
-  const texture = new THREE.TextureLoader().load('models/env/textures/env_base_grass.jpg');
+  const texture = new THREE.TextureLoader().load('models/active/env/textures/env_base_grass.jpg');
   texture.wrapS = THREE.RepeatWrapping;
   texture.wrapT = THREE.RepeatWrapping;
   texture.repeat.set(4, 4);
@@ -189,7 +218,7 @@ const FAR_GROUND_SIZE = 680;
 const FAR_GROUND_TILE = 30;
 
 function farGroundTexture() {
-  const texture = new THREE.TextureLoader().load('models/env/textures/env_base_grass.jpg');
+  const texture = new THREE.TextureLoader().load('models/active/env/textures/env_base_grass.jpg');
   texture.wrapS = THREE.RepeatWrapping;
   texture.wrapT = THREE.RepeatWrapping;
   texture.repeat.set(FAR_GROUND_SIZE / FAR_GROUND_TILE, FAR_GROUND_SIZE / FAR_GROUND_TILE);
@@ -400,9 +429,15 @@ export async function bootView(state) {
   scene.add(menuLight);
   createToonGradientMap();
 
+  const groundMat = new THREE.MeshToonMaterial({ map: groundTexture(), color: 0xffffff, gradientMap: createToonGradientMap() });
+  bindGroundStain(groundMat);
+  // 四角的地面分区（见 js/zones.js）。必须排在 bindGroundStain 之后 ——
+  // 它要用那边已经接好的 vStainWorld varying，否则会自己补一个用 modelMatrix
+  // 算出来的兜底值（那个对实例网格是错的）。
+  bindGroundZones(groundMat);
   const ground = new THREE.Mesh(
     new THREE.PlaneGeometry(CONFIG.arena.size, CONFIG.arena.size),
-    new THREE.MeshToonMaterial({ map: groundTexture(), color: 0xffffff, gradientMap: createToonGradientMap() }),
+    groundMat,
   );
   ground.rotation.x = -Math.PI / 2;
   scene.add(ground);
@@ -413,7 +448,19 @@ export async function bootView(state) {
   scene.add(farGround);
 
   const grass = createGrassField();
+  // 草也要跟着分区变色。草叶的材质在 js/grass.js 里自建、自带 vStainWorld，
+  // 所以这里直接补一刀：**草不跟着变，地上的色块会像一张铺上去的桌布** ——
+  // 草叶仍是一茬茬绿点戳在异色地面上，反而更假。
+  bindGroundZones(grass.mesh.material);
   scene.add(grass.mesh);
+
+  // 四角的氛围层（见 js/ambience.js）：沼泽积水反光、两处暖点光、战场飘灰。
+  // 全都按「玩家离角心多远」做平滑权重，不做硬切。
+  const ambience = createZoneAmbience();
+  scene.add(ambience._waterGroup);
+  scene.add(ambience._ashPoints);
+  scene.add(ambience._fireNe);
+  scene.add(ambience._fireSe);
 
   // 土路压在地面之上、草丛之下。草场的顶点着色器会按同一套中心线把草压平，
   // 于是路面是干净的，路肩是渐变的，中间不需要遮罩贴图。
@@ -434,9 +481,15 @@ export async function bootView(state) {
   // 串行等的话，进场会多停两秒。
   const narrativeTask = createNarrativeScenery();
 
+  // 四角专属地标（第三层，见 js/landmarks.js）。当前只有西南角骨骸复用现有 GLB，
+  // 其余三角待 Lux3D 生成后自动就位。同样并行加载，不挡进场。
+  const landmarksTask = createLandmarks();
+
   // 体量层（远景的山、林、岩，见 js/scenery.js）。同样并行加载 ——
   // 它回答的是「路外面还有没有世界」，没有它，远景是一望到底的空草地。
-  const sceneryTask = createScenery();
+  // 灌木的避让要在证据层、叙事层、地标层的碰撞形状注册完之后才准（见 scenery.js 的 bushClear），
+  // 所以把三边的 promise 递进去，体量层自己决定等到哪一步再种灌木。
+  const sceneryTask = createScenery({ readyBeforeBushes: Promise.all([evidenceTask, narrativeTask, landmarksTask]) });
 
   // 边界全息力场（见 js/borderfx.js）。取代原来那四块平躺的紫色符纹贴片 ——
   // 贴片在 58° 俯视下只是一条略深的横带，玩家被传送走之前根本没注意到边界。
@@ -458,11 +511,22 @@ export async function bootView(state) {
   camera.updateProjectionMatrix();
   renderer.render(scene, camera);
 
+  const __t0 = performance.now();
+  console.info('[boot] 开始加载主角');
   const loaded = await loadHero();
+  console.info('[boot] 主角载入完成', Math.round(performance.now() - __t0), 'ms',
+               'fallback=', loaded.fallback, 'clips=', loaded.clips.length);
   const narrative = await narrativeTask;
+  console.info('[boot] 叙事载入完成', Math.round(performance.now() - __t0), 'ms');
   scene.add(narrative.group);
   if (narrative.failed.length) {
     console.warn('[narrative] 未加载的资产', narrative.failed);
+  }
+
+  const landmarks = await landmarksTask;
+  scene.add(landmarks.group);
+  if (landmarks.skipped.length) {
+    console.info('[landmarks] 未就位的地标（待 Lux3D 生成）', landmarks.skipped);
   }
 
   const scenery = await sceneryTask;
@@ -499,6 +563,7 @@ export async function bootView(state) {
   scene.add(shadow);
   scene.add(hero);
   const actors = await createActors(scene);
+  state.assets.bodyRadius = actors.bodyRadius;
 
   // 调试观测点：地址栏加 ?boss=1 会在出生点右前方立一个 Boss，只走渲染，
   // 不参与 AI、碰撞、伤害与血条。用来验收模型、动作切换与胸甲纹章。
@@ -542,7 +607,9 @@ export async function bootView(state) {
     grass,
     path,
     roadProps,
+    ambience,
     narrative,
+    landmarks,
     scenery,
     evidence,
     actors,
@@ -553,11 +620,16 @@ export async function bootView(state) {
   state.assets.fallback = !!loaded.fallback;
   // 调试钩子：可在控制台读 renderer.info 核对三角数与绘制调用。
   window.__view = state.view;
+  // 碰撞形状的完整快照。tools/probe_clearance.mjs 靠它量道具之间的净空 ——
+  // 净空只能从"实际注册进去的形状"里量，照 LAYOUT 手算迟早和代码对不上。
+  window.__shapes = debugShapes();
+  // 两条路的距离场。tools/probe_counts.mjs 用它把实例按"主路带 / 横路带"分开数。
+  window.__road = { pathDistance, crossDistance };
 
   if (location.protocol === 'file:') {
     showNote('直接双击 HTML 会被浏览器拦住模型。请在仓库根目录运行 python -m http.server，然后打开 http://127.0.0.1:8000/ 。现在用几何体代替主角。');
   } else if (loaded.fallback) {
-    showNote('主角模型没有载入，已改用几何体。确认用本地 HTTP 服务打开，并且 models/rigged_v1/protagonist_rigged_v1.glb 还在。');
+    showNote('主角模型没有载入，已改用几何体。确认用本地 HTTP 服务打开，并且 models/_deprecated/enemies/rigged_v1/protagonist_rigged_v1.glb 还在。');
   } else {
     showNote('');
   }
@@ -566,7 +638,9 @@ export async function bootView(state) {
   syncHero(state, 0.05);
   state.view.hero.rotation.y = 0;
   syncShell(state);
+  console.info('[boot] 首次整帧渲染前', Math.round(performance.now() - __t0), 'ms');
   renderer.render(scene, camera);
+  console.info('[boot] 首次整帧渲染完成', Math.round(performance.now() - __t0), 'ms');
   window.__booted = true;
 
   window.addEventListener('resize', () => {
@@ -657,6 +731,48 @@ function syncCamera(state) {
   streaks.material.opacity = camera.speedLineT > 0 ? camera.speedLineT / CONFIG.camera.speedLine : 0;
 }
 
+function statNum(value) {
+  const rounded = Math.round(value * 10) / 10;
+  return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1);
+}
+
+function statPct(value) {
+  return `${Math.round(value * 100)}%`;
+}
+
+function fillPauseStats(nodes, state) {
+  if (!nodes.pauseStats) return;
+  const player = state.player;
+  const need = levelCost(player.level);
+  const moving = player.speedBuff > 0 ? player.spd * player.speedBuffMul : player.spd;
+  const speedText = player.speedBuff > 0 ? `${statNum(moving)}（加速中）` : statNum(player.spd);
+  const rows = [
+    ['生命', `${Math.max(0, Math.round(player.hp))} / ${player.hpMax}`],
+    ['等级', String(player.level)],
+    ['经验', `${player.xp} / ${need}`],
+    ['攻击力', statNum(player.atk)],
+    ['攻击速度', `${statNum(player.aspd)} 次/秒`],
+    ['移动速度', speedText],
+    ['防御', statNum(player.def)],
+    ['闪避', statPct(player.dodge)],
+    ['暴击率', statPct(player.crit)],
+    ['暴击伤害', statPct(player.critDmg)],
+    ['穿透', String(player.pierce)],
+    ['击杀', String(player.kills)],
+    ['当前连击', String(player.combo)],
+    ['最高连击', String(player.bestCombo)],
+    ['已开宝箱', String(player.chestsOpened)],
+  ];
+  nodes.pauseStats.textContent = '';
+  rows.forEach(([name, value]) => {
+    const term = document.createElement('dt');
+    const desc = document.createElement('dd');
+    term.textContent = name;
+    desc.textContent = value;
+    nodes.pauseStats.append(term, desc);
+  });
+}
+
 function syncHud(state) {
   const nodes = dom();
   const player = state.player;
@@ -665,7 +781,7 @@ function syncHud(state) {
     state.hud.hp = hp;
     nodes.hp.style.transform = `scaleX(${Math.max(0, hp)})`;
   }
-  const need = CONFIG.formulas.xpBase + CONFIG.formulas.xpPerLevel * (player.level - 1);
+  const need = levelCost(player.level);
   const xp = need > 0 ? player.xp / need : 0;
   if (state.hud.xp !== xp) {
     state.hud.xp = xp;
@@ -688,6 +804,17 @@ function syncHud(state) {
     nodes.kills.textContent = String(player.kills);
   }
   nodes.pause.hidden = !state.time.paused || state.doc.open;
+  const charging = state.phase === 'play' && player.alive && player.chargeT > 0;
+  if (nodes.charge) {
+    nodes.charge.hidden = !charging;
+    if (charging) {
+      const ready = player.chargeT >= CONFIG.weapon.chargeHold;
+      nodes.charge.classList.toggle('ready', ready);
+      nodes.chargeFill.style.transform = `scaleX(${Math.min(1, player.chargeT / CONFIG.weapon.chargeHold)})`;
+      nodes.chargeLabel.textContent = ready ? '松开射击' : '蓄力';
+    }
+  }
+  if (!nodes.pause.hidden) fillPauseStats(nodes, state);
   nodes.pad.hidden = state.input.device !== 'gamepad';
   const pointer = state.input.pointer;
   nodes.stick.hidden = !pointer.active;
@@ -707,6 +834,9 @@ function nearestDocument(state) {
   const player = state.player;
   let best = '';
   let bestD = 2.2;
+  // 谁近读谁，没有例外。原来这里有一条「走近军箱优先给随箱名册」的硬偏袒，
+  // 是替 0.14 m 间距打补丁；2026-11-17 把册子挪到第二只箱子上（见 evidence.js），
+  // 两件东西各有各的脚下位置，偏袒一撤就干净了。
   for (let i = 0; i < list.length; i += 1) {
     const item = list[i];
     const d = Math.hypot(item.x - player.x, item.z - player.z);
@@ -715,11 +845,39 @@ function nearestDocument(state) {
       best = item.id;
     }
   }
-  if (best === 'seal-warrant') {
-    const scroll = list.find((item) => item.id === 'order-scroll');
-    if (scroll && Math.hypot(scroll.x - player.x, scroll.z - player.z) < 2.2) best = 'order-scroll';
-  }
   return best;
+}
+
+
+// 文书正文只在「换成另一件东西」时重排一次。syncBattle 每帧都跑，
+// 逐帧重建 innerHTML 会把面板的滚动位置和动画一直顶回去。
+let docShownId = '';
+
+function paintDocument(id) {
+  const nodes = dom();
+  const doc = documentFor(id);
+  if (!doc) return;
+  if (nodes.docOffice) nodes.docOffice.textContent = doc.office;
+  if (nodes.docTitle) nodes.docTitle.textContent = doc.title;
+  if (nodes.docMeta) nodes.docMeta.textContent = doc.meta;
+  if (nodes.docSign) nodes.docSign.textContent = `署名：${doc.sign}`;
+  if (nodes.docSeal) nodes.docSeal.textContent = doc.seal;
+  if (nodes.docBody) {
+    // 一条是一件事，用 textContent 而不是拼 HTML —— 正文里有顿号和引号，
+    // 走字符串拼接迟早有一天被某个标点咬到。
+    nodes.docBody.replaceChildren(...doc.body.map((line) => {
+      const p = document.createElement('p');
+      p.textContent = line;
+      return p;
+    }));
+  }
+  const panel = nodes.doc && nodes.doc.querySelector('.doc-panel');
+  if (panel) {
+    panel.scrollTop = 0;
+    panel.classList.remove('drop');
+    void panel.offsetWidth;
+    panel.classList.add('drop');
+  }
 }
 
 function syncBattle(state) {
@@ -798,6 +956,14 @@ function syncBattle(state) {
     if (showHint) nodes.docHint.textContent = padHint ? '查看文书，A' : '查看文书，E';
   }
   if (nodes.doc) nodes.doc.hidden = !state.doc.open;
+  if (state.doc.open && state.doc.nearId) {
+    if (docShownId !== state.doc.nearId) {
+      paintDocument(state.doc.nearId);
+      docShownId = state.doc.nearId;
+    }
+  } else if (!state.doc.open) {
+    docShownId = '';
+  }
   if (nodes.docKey) nodes.docKey.textContent = padHint ? '再按 A 或 Esc 关闭' : '再按 E 或 Esc 关闭';
 
   if (nodes.arrows && state.phase === 'play') {
@@ -841,9 +1007,13 @@ function syncBattle(state) {
 
 function syncShell(state) {
   const nodes = dom();
+  if (state.ui.settings && state.phase === 'howto') state.phase = 'menu';
+  const onTitle = state.phase === 'menu' || state.phase === 'howto';
   nodes.root.classList.toggle('in-play', state.phase === 'play' || state.phase === 'result');
-  nodes.menu.hidden = state.phase !== 'menu' || state.ui.settings;
+  nodes.menu.hidden = !onTitle;
+  if (nodes.menuCopy) nodes.menuCopy.hidden = state.phase === 'howto' || (state.ui.settings && onTitle);
   nodes.howto.hidden = state.phase !== 'howto';
+  if (nodes.settings) nodes.settings.classList.toggle('over-cover', onTitle && state.ui.settings);
 }
 
 export function updateRenderAndHUD(state, dt) {
@@ -882,6 +1052,19 @@ export function updateRenderAndHUD(state, dt) {
   if (path) {
     // 路面高光跟着玩家走，权重用和移动完全相同的 pathBlend，两边不会脱节。
     path.update(state.player.x, state.player.z, state.player.pathBlend);
+  }
+  // 四角氛围：按玩家位置驱动雾 / 点光 / 飘灰的浓度。
+  const ambience = state.view.ambience;
+  if (ambience) ambience.update(state.player.x, state.player.z, state.time.elapsed);
+  // 大体量物件的近距离淡出：把玩家坐标喂给灌木 / 枯树 / 树 / 林块四份材质，
+  // 离得近的那几件逐像素裁掉。不这么做的话，镜头在玩家身后，前面那棵 5.6 m 的树
+  // 会把人整个盖住 —— 那是「灌木有碰撞箱」这个误会真正的来源
+  // （碰撞实测不存在，见 scenery.js 的 FADE_SPEC 注释）。
+  const scenery = state.view.scenery;
+  if (scenery && scenery.fadeUniforms) {
+    for (const key of Object.keys(scenery.fadeUniforms)) {
+      scenery.fadeUniforms[key].value.set(state.player.x, state.player.z);
+    }
   }
   // 调试 Boss 自走自己的动作与轮播，不读任何玩法状态。
   if (state.view.debugBoss) state.view.debugBoss.update(dt);

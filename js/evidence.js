@@ -18,7 +18,7 @@
 //
 // 上一版这五件是用 BoxGeometry / TorusGeometry 拼的，约 2.2 k 三角，够读轮廓
 // 但经不起停下来的玩家细看：木纹没有、铁件是一根方条、封条是纯色片。
-// 这一版换成 Lux3D 生成的 GLB（models/env/body/，第八批 3.62 MB + 第九批陶罐 0.49 MB
+// 这一版换成 Lux3D 生成的 GLB（models/active/env/body/，第八批 3.62 MB + 第九批陶罐 0.49 MB
 // + 第一批石槽 0.85 MB），
 // **摆位、贴地阴影、可交互锚点全部沿用**，只换几何来源。
 //
@@ -58,11 +58,11 @@
 
 import * as THREE from 'three';
 import { loadAndNormalizeGLB } from './pipeline.js';
-import { pathCenterZ, pathSlope, terrainY } from './path.js';
+import { crossCenterX, crossSlope, pathCenterZ, pathSlope, terrainY } from './path.js';
 import { COLLIDERS } from './collision-data.js';
 import { registerAsset } from './collision.js';
 
-const ASSET_ROOT = 'models/env/body/';
+const ASSET_ROOT = 'models/active/env/body/';
 
 // scale 写成数组就是不等比（x / y / z），写成数字就是等比。
 // yaw 是资产自身的朝向修正 —— 生成模型的「正面」不一定是 +z，
@@ -164,31 +164,56 @@ const SPOTS = [
   { build: 'tether', x: 43.7, side: -1, lateral: 4.66, yaw: -0.02, tilt: 0.05, v: 0.77 },
   { build: 'tether', x: 45.3, side: -1, lateral: 4.58, yaw: 0.06, tilt: -0.02, v: 0.30, broken: true },
 
-  // 石槽在桩列**前面**（x 39.8，第一根桩 38.9、第二根 40.5），lateral 6.4。
-  // 第一版摆在 44.2 / 6.9（桩列后半段的正后方），截图里贴着 x=42 与 x=45 那两棵树的
-  // 树冠边缘，读成"树下放了个灰箱子"。挪到这儿是因为这一段背后是空的：
-  // 最近的树在 x=30 与 x=42（lateral 10.2–10.6），中间 12 m 没有东西，
-  // 大岩群在 x=36 / 7.4，离这里 3.9 m。
-  // 于是从路上看是「槽 → 一排桩 → 骨骸」，槽在最前，先读到"喂过"。
-  { build: 'trough', x: 39.8, side: -1, lateral: 6.40, yaw: 0.10, clear: 2.40 },
+  // 石槽在桩列的**外侧**（x 42.4 / lateral 7.2，世界坐标 40.39/−17.34）。
+  // 第一版摆在 44.2 / 6.9，贴着树冠边缘，读成"树下放了个灰箱子"；第二版挪到 39.8 / 6.4，
+  // 落进桩列里 —— 与第一、第二根桩的净空只有 0.805 m，人形怪过不去。
+  // 现在往外挪一档：离最近一根桩 1.7 m、离 x=42 那棵树 3.0 m。
+  // 从路上看仍是「槽 → 一排桩 → 骨骸」，槽在最外侧，先读到"喂过"。
+  { build: 'trough', x: 42.4, side: -1, lateral: 7.20, yaw: 0.10, clear: 2.40 },
 
   // 转运场。笼车尾门朝 −x（也就是朝来路），镣铐掉在门外 ——
   // 玩家从 x=47 走过来，先看到两只军箱，再看到门和地上的链子，最后才看到车。
+  //
+  // 2026-11-17 第二次改：**两只军箱上的文书都挪走了**，这里只剩空箱。
+  // 三份文书分散到地图三个尽头（见下面的「散落的箱子」），转运场变成
+  // 「车还在、箱子还在、纸没了」—— 反倒更像被翻过一遍的现场。
   { build: 'cage', x: 50.6, side: -1, lateral: 5.30, yaw: 0.03 },
   { build: 'shackle', x: 49.15, side: -1, lateral: 4.35, yaw: 0.55 },
-  { build: 'sealCrate', x: 47.9, side: -1, lateral: 6.30, yaw: 0.22, doc: 'seal-warrant' },
+  { build: 'sealCrate', x: 47.9, side: -1, lateral: 6.30, yaw: 0.22 },
   { build: 'sealCrate', x: 47.15, side: -1, lateral: 7.20, yaw: 0.94 },
-  // 文书包放在第一只箱子的盖上，靠一角 —— 放正中会和蜡印重叠。
-  // dy 0.64 = 木箱放大后的实际高度（0.318 × 2），不是估的。
-  { build: 'scroll', x: 47.9, side: -1, lateral: 6.30, yaw: 0.22, dy: 0.64, dx: 0.09, dz: -0.11, doc: 'order-scroll' },
 
-  // 三只陶罐，摆在军箱与笼车之间（世界坐标 48.83/−17.26、49.41/−17.57、
-  // 48.48/−17.76）。互相 0.61–0.95 m：罐径 0.48，再近就碰在一起，
-  // 再远就散成三件孤物 —— 这个间距才读成"一摞备用的"。
+  // --- 散落的箱子：三份文书，三个尽头 -----------------------------------
+  //
+  // 转运路线从西部（哥维纳）往东、往北走，路上掉队的箱子就散在三个方向的尽头。
+  // 玩家为了拿全三份，必须把整条主路走完、再横穿一次十字路口 ——
+  // 三份文件本身就是「这条路有多长」的度量。
+  //
+  // 每处都是「军箱 + 盖上的文书包」，可读的是包（纸是纸），箱体不再单独可读。
+  // 包的位置沿用第二只箱子上量过的 0.64 m 盖高与 dx/dz 偏移。
+  // 三处与既有陈设的净空用 tools/probe_clearance.mjs 复核过。
+
+  // 西端（主路 −x 尽头）。哥维纳在西部，命令从团部往外发，所以令放在这一头。
+  { build: 'sealCrate', x: -52.0, side: 1, lateral: 4.90, yaw: 0.34 },
+  { build: 'scroll', x: -52.0, side: 1, lateral: 4.90, yaw: 0.34, dy: 0.64, dx: 0.03, dz: -0.05, doc: 'seal-warrant' },
+
+  // 东端（主路 +x 尽头）。账本放在货物的去向上 —— 莫斯塔拉那边的收货记录。
+  { build: 'sealCrate', x: 53.0, side: 1, lateral: 4.80, yaw: 1.02 },
+  { build: 'scroll', x: 53.0, side: 1, lateral: 4.80, yaw: 1.02, dy: 0.64, dx: 0.03, dz: -0.05, doc: 'order-scroll' },
+
+  // 北端（横路 −z 尽头）。回执是从收方寄回来的，所以放在与主路无关的一条岔道上。
+  { build: 'sealCrate', cross: true, x: -54.0, side: 1, lateral: 4.60, yaw: 0.30 },
+  { build: 'scroll', cross: true, x: -54.0, side: 1, lateral: 4.60, yaw: 0.30, dy: 0.64, dx: 0.03, dz: -0.05, doc: 'receipt-konica' },
+
+  // 三只陶罐，摆在军箱西侧的空草地上（世界坐标 45.17/−19.57、44.14/−19.90、
+  // 43.38/−19.21）。互相 1.0–1.2 m：罐径 0.48，再近就碰在一起，再远就散成三件孤物。
+  //
+  // 2026-11-17 从「军箱与笼车之间」挪出来。原位置（48.8–49.4 / −17.3 一带）被
+  // 军箱、笼车、岩群夹住，最紧一处净空只有 0.620 m，怪物从那儿过会卡；
+  // 而这批东西本来就是"掉在转运场边上的货"，往空草地散一步仍然读得懂。
   // 偏航给三个不同值，避免三只罐口朝同一方向那种复制感。
-  { build: 'jar', x: 49.20, side: -1, lateral: 6.30, yaw: 0.40 },
-  { build: 'jar', x: 49.62, side: -1, lateral: 6.58, yaw: 1.90 },
-  { build: 'jar', x: 48.98, side: -1, lateral: 6.82, yaw: 3.10 },
+  { build: 'jar', x: 45.60, side: -1, lateral: 8.60, yaw: 0.40 },
+  { build: 'jar', x: 45.00, side: -1, lateral: 9.00, yaw: 1.90 },
+  { build: 'jar', x: 44.50, side: -1, lateral: 8.40, yaw: 3.10 },
 ];
 
 const SHADOW_Y = 0.010;
@@ -319,13 +344,19 @@ export async function createEvidence() {
     mesh.name = `evidence-${key}`;
 
     spots.forEach((spot, i) => {
-      const s = pathSlope(spot.x);
+      // spot.cross 为真时 x 是横路的里程（也就是 z），换用横路那套换式。
+      // 横路不垫高，所以 c z 直接用 z + 侧向分量，高程仍交 terrainY。
+      const s = spot.cross ? crossSlope(spot.x) : pathSlope(spot.x);
       const len = Math.sqrt(1 + s * s);
       const lateral = spot.lateral * spot.side;
-      const cx = spot.x + (-s / len) * lateral;
-      const cz = pathCenterZ(spot.x) + (1 / len) * lateral;
+      const cx = spot.cross
+        ? crossCenterX(spot.x) + (1 / len) * lateral
+        : spot.x + (-s / len) * lateral;
+      const cz = spot.cross
+        ? spot.x + (-s / len) * lateral
+        : pathCenterZ(spot.x) + (1 / len) * lateral;
       const gy = terrainY(cx, cz);
-      const yaw = -Math.atan(s) + spot.yaw;
+      const yaw = (spot.cross ? -Math.PI / 2 + Math.atan(s) : -Math.atan(s)) + spot.yaw;
       // 资产自身的 def.yaw 已经烘进顶点，碰撞只跟这一次摆放偏航。
       // dx/dz 是放上箱盖时的局部偏移，要先转到世界再登记，否则文书包会留在箱子中心。
       if (ASSETS[key].collider) {

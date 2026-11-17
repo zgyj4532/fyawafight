@@ -34,7 +34,7 @@ function torusDelta(x1, z1, x2, z2, size) {
   return { dx, dz, dist: Math.hypot(dx, dz) };
 }
 
-function levelCost(level) {
+export function levelCost(level) {
   return CONFIG.formulas.xpBase + CONFIG.formulas.xpPerLevel * (level - 1);
 }
 
@@ -124,6 +124,7 @@ function acquireTarget(state) {
 
 function tryFire(state) {
   const player = state.player;
+  if (state.input.slow) return;
   if (player.fireCd > 0) return;
   const targetId = state.weapon.target;
   const enemies = state.enemies;
@@ -159,9 +160,64 @@ function tryFire(state) {
   bullets.vz[slot] = vz;
   bullets.age[slot] = 0;
   bullets.pierce[slot] = player.pierce;
+  bullets.charge[slot] = 0;
   const maxAlive = CONFIG.spawn.maxAlive;
   bullets.hit.fill(0, slot * maxAlive, slot * maxAlive + maxAlive);
   state.fx.queue.push('shoot');
+}
+
+function fireCharged(state) {
+  const player = state.player;
+  const bullets = state.bullets;
+  let slot = -1;
+  for (let i = 0; i < bullets.count; i += 1) {
+    if (bullets.alive[i] === 0) {
+      slot = i;
+      break;
+    }
+  }
+  if (slot < 0) return false;
+
+  const speed = CONFIG.weapon.speed;
+  const targetId = state.weapon.target;
+  const target = targetId >= 0 ? state.enemies[targetId] : null;
+  const rel = target && target.alive
+    ? torusDelta(player.x, player.z, target.x, target.z, CONFIG.arena.size)
+    : null;
+  let vx = Math.sin(player.facing) * speed;
+  let vz = Math.cos(player.facing) * speed;
+  if (rel && rel.dist > 1e-6) {
+    vx = (rel.dx / rel.dist) * speed;
+    vz = (rel.dz / rel.dist) * speed;
+  }
+  bullets.alive[slot] = 1;
+  bullets.x[slot] = player.x;
+  bullets.z[slot] = player.z;
+  bullets.vx[slot] = vx;
+  bullets.vz[slot] = vz;
+  bullets.age[slot] = 0;
+  bullets.pierce[slot] = player.pierce;
+  bullets.charge[slot] = 1;
+  const maxAlive = CONFIG.spawn.maxAlive;
+  bullets.hit.fill(0, slot * maxAlive, slot * maxAlive + maxAlive);
+  state.fx.queue.push('shoot');
+  return true;
+}
+
+function updateCharge(state) {
+  const player = state.player;
+  const hold = CONFIG.weapon.chargeHold;
+  if (state.input.slow) {
+    player.chargeT = Math.min(hold, player.chargeT + state.time.delta);
+    return false;
+  }
+  if (player.chargeT >= hold) {
+    if (!fireCharged(state)) return false;
+    player.chargeT = 0;
+    return true;
+  }
+  player.chargeT = 0;
+  return false;
 }
 
 function hitEnemy(state, bulletIndex, enemy) {
@@ -171,9 +227,13 @@ function hitEnemy(state, bulletIndex, enemy) {
   const maxAlive = CONFIG.spawn.maxAlive;
   bullets.hit[bulletIndex * maxAlive + enemy.id] = 1;
 
-  const crit = nextUnit(state) < player.crit ? player.critDmg : 1;
   const def = enemy.id === 0 ? CONFIG.boss.def : 0;
-  enemy.hp -= mitigate(player.atk * weapon.coefficient * crit, def, CONFIG.formulas.outgoingDefK);
+  let amount = CONFIG.weapon.chargeDamage;
+  if (!bullets.charge[bulletIndex]) {
+    const crit = nextUnit(state) < player.crit ? player.critDmg : 1;
+    amount = player.atk * weapon.coefficient * crit;
+  }
+  enemy.hp -= mitigate(amount, def, CONFIG.formulas.outgoingDefK);
 
   const vx = bullets.vx[bulletIndex];
   const vz = bullets.vz[bulletIndex];
@@ -182,7 +242,10 @@ function hitEnemy(state, bulletIndex, enemy) {
     enemy.x += (vx / speed) * weapon.knockback;
     enemy.z += (vz / speed) * weapon.knockback;
   }
-  const solved = resolve(enemy.x, enemy.z, enemy.radius);
+  const table = state.assets && state.assets.bodyRadius;
+  const visual = table && table[enemy.kind];
+  const body = Math.max(enemy.radius || 0, visual ? visual * (enemy.scale || 1) : 0);
+  const solved = resolve(enemy.x, enemy.z, body);
   enemy.x = solved.x;
   enemy.z = solved.z;
 
@@ -497,7 +560,8 @@ export function updateCombat(state, dt) {
     weapon.seekT += 1 / CONFIG.weapon.seekHz;
     acquireTarget(state);
   }
-  tryFire(state);
+  const firedCharge = updateCharge(state);
+  if (!firedCharge) tryFire(state);
   updateBullets(state, step);
   if (!player.alive) return;
   applyContact(state, step);

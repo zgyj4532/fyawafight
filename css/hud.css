@@ -71,6 +71,37 @@ html, body {
   letter-spacing: 0.04em;
 }
 
+#charge {
+  position: absolute;
+  left: 50%;
+  bottom: 28px;
+  width: 168px;
+  transform: translateX(-50%);
+  text-align: center;
+}
+
+#charge[hidden] { display: none; }
+
+#charge-label {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 12px;
+  letter-spacing: 0.12em;
+}
+
+#charge .bar-track { height: 6px; }
+
+#charge-fill {
+  height: 100%;
+  width: 100%;
+  background: var(--gold);
+  transform-origin: left center;
+  transform: scaleX(0);
+}
+
+#charge.ready #charge-label { color: var(--ok); }
+#charge.ready #charge-fill { background: var(--ok); }
+
 #timer {
   position: absolute;
   top: 12px;
@@ -153,7 +184,7 @@ html, body {
 
 #levelup[hidden], #result[hidden], #boss-bar[hidden],
 #joystick[hidden], #pad-hint[hidden], #pause[hidden], #boot-note[hidden],
-#menu[hidden], #howto[hidden], #doc[hidden], #doc-hint[hidden],
+#menu[hidden], #menu-copy[hidden], #howto[hidden], #doc[hidden], #doc-hint[hidden],
 .settings-body[hidden] { display: none; }
 
 #hud:not(.in-play) .bar,
@@ -172,7 +203,7 @@ html, body {
   inset: 0;
   z-index: 4;
   pointer-events: none;
-  background: #f9fbfd;
+  background: #071018;
 }
 
 #cover {
@@ -180,8 +211,8 @@ html, body {
   inset: 0;
   width: 100%;
   height: 100%;
-  object-fit: contain;
-  object-position: center 42%;
+  object-fit: cover;
+  object-position: center center;
   pointer-events: none;
 }
 
@@ -194,24 +225,23 @@ html, body {
   flex-direction: column;
   align-items: center;
   gap: 12px;
-  padding: 48px 16px 22px;
-  background: linear-gradient(to top, rgba(249, 251, 253, 0.96) 42%, rgba(249, 251, 253, 0));
-}
-
-#menu-title {
-  margin: 0;
-  font-size: clamp(28px, 4vw, 48px);
-  font-weight: 700;
-  line-height: 1;
-  letter-spacing: 0.04em;
-  text-align: center;
-  color: #10233f;
+  padding: 72px 16px 28px;
+  background: linear-gradient(to top, rgba(7, 16, 24, 0.55) 10%, rgba(7, 16, 24, 0));
 }
 
 .menu-actions {
   display: flex;
   gap: 16px;
   pointer-events: auto;
+}
+
+/* 构筑标记。由 js/main.js 写入，用来判断浏览器跑的是不是盘上这一版 ——
+   玩家反馈过三次「启动后什么都没改」，之前只能靠猜缓存。 */
+#build-stamp {
+  font-size: 12px;
+  letter-spacing: 0.14em;
+  color: rgba(232, 226, 208, 0.40);
+  user-select: none;
 }
 
 #menu .menu-btn {
@@ -255,7 +285,7 @@ html, body {
   z-index: 6;
   display: grid;
   place-items: center;
-  background: rgba(7, 16, 24, 0.5);
+  background: transparent;
 }
 
 .howto-panel {
@@ -296,13 +326,34 @@ html, body {
   display: grid;
   place-items: center;
   background: rgba(7, 16, 24, 0.4);
-  font-size: 42px;
-  letter-spacing: 0.2em;
   pointer-events: none;
 }
 
-.pause-sheet { text-align: center; }
-.pause-sheet p { margin: 0 0 18px; }
+.pause-sheet {
+  width: min(420px, calc(100% - 32px));
+  padding: 22px 26px 18px;
+  text-align: center;
+  background: var(--hp-bg);
+  border: 2px solid rgba(30, 155, 232, 0.75);
+}
+.pause-title {
+  margin: 0 0 14px;
+  font-size: 32px;
+  letter-spacing: 0.2em;
+}
+#pause-stats {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 7px 18px;
+  margin: 0 0 16px;
+  text-align: left;
+  font-size: 16px;
+  letter-spacing: 0.04em;
+}
+#pause-stats dt,
+#pause-stats dd { margin: 0; }
+#pause-stats dt { opacity: 0.78; }
+#pause-stats dd { text-align: right; }
 #btn-pause-settings {
   font: inherit;
   font-size: 18px;
@@ -401,6 +452,108 @@ html, body {
   border: 2px solid rgba(30, 155, 232, 0.75);
 }
 
+/* 文书是一张纸，不是一块 HUD 面板：纸色 + 墨色 + 朱印。
+   暗底上出现一张暖纸，比再做一块半透明蓝板更像"从箱子里拿起来的东西"。 */
+.doc-panel {
+  /* 600 → 700 px（2026-11-17）：正文改成完整的主谓宾之后，一条动辄 35 字上下。
+     600 px 只装得下 32 字，多出来的两三个字会掉到第二行，孤零零一个「到。」
+     —— 句子是好句子，版式把它读成了喘不上气。加宽比删字便宜。 */
+  width: min(700px, calc(100% - 32px));
+  max-height: min(560px, calc(100% - 48px));
+  overflow: auto;
+  padding: 26px 30px 22px;
+  color: #2b2118;
+  background:
+    radial-gradient(120% 90% at 12% 0%, #f3e8cd 0%, #e7d9ba 52%, #dcc9a3 100%);
+  border: 2px solid #8c7a5c;
+  box-shadow: 0 18px 44px rgba(3, 8, 14, 0.55);
+  font-family: "Songti SC", "STSong", "Noto Serif SC", "SimSun", serif;
+}
+
+.doc-office {
+  margin: 0 0 6px;
+  font-size: 13px;
+  letter-spacing: 0.22em;
+  color: #6d5a41;
+}
+
+.doc-panel h2 {
+  margin: 0 0 6px;
+  font-size: 30px;
+  letter-spacing: 0.14em;
+  font-weight: 700;
+  color: #241a12;
+}
+
+.doc-meta {
+  margin: 0 0 14px;
+  padding-bottom: 12px;
+  font-size: 13px;
+  letter-spacing: 0.06em;
+  color: #6d5a41;
+  border-bottom: 1px solid rgba(92, 74, 50, 0.35);
+}
+
+.doc-body p {
+  margin: 0 0 9px;
+  font-size: 16px;
+  line-height: 1.75;
+  letter-spacing: 0.02em;
+  text-indent: 0;
+  /* 兜底：正文一条 30 字上下，宽度刚好卡在折行边缘，
+     改一个字就可能甩出「到。」这种孤行。让浏览器自己避开。 */
+  text-wrap: pretty;
+}
+
+.doc-foot {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 18px;
+}
+
+.doc-sign {
+  margin: 0;
+  font-size: 16px;
+  letter-spacing: 0.10em;
+  color: #241a12;
+}
+
+/* 朱印：歪一点、半透明一点，才像盖上去的。 */
+.doc-seal {
+  display: inline-block;
+  padding: 8px 10px;
+  font-size: 15px;
+  line-height: 1.1;
+  letter-spacing: 0.16em;
+  color: #a8272c;
+  border: 2px solid #a8272c;
+  border-radius: 3px;
+  transform: rotate(-6deg);
+  opacity: 0.82;
+}
+
+/* 纸从箱子里被抽出来：小幅上浮 + 微缩放。不用结果页那种整屏掉落 ——
+   文书是拿在手上的东西，不该从天上砸下来。
+   **不带 opacity**：无头 SwiftShader 掉到 1 fps 时，从 opacity:0 起步的动画
+   会被卡在首帧上，截图里就只剩一层压暗的底板。位移不依赖透明度，卡帧也只
+   是位置差几像素。 */
+.doc-panel.drop { animation: paper-rise 0.26s cubic-bezier(.2, .8, .3, 1); }
+
+@keyframes paper-rise {
+  from { transform: translateY(14px) scale(0.985); }
+  to { transform: translateY(0) scale(1); }
+}
+
+#doc-key {
+  margin: 16px 0 0;
+  font-family: "Segoe UI", sans-serif;
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  color: #7b6850;
+}
+
 #settings {
   position: fixed;
   inset: 0;
@@ -411,6 +564,7 @@ html, body {
 }
 
 #settings[hidden] { display: none; }
+#settings.over-cover { background: transparent; }
 
 .settings-layout { display: flex; gap: 18px; align-items: flex-start; }
 .settings-tabs { display: flex; flex-direction: column; gap: 8px; min-width: 88px; }

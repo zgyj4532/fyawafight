@@ -254,6 +254,14 @@ function lightEnemy(slot, state, pos, kind, stats, elite, trap) {
   slot.dashHit = false;
   slot.portalCd = 0;
   slot.recoverNeed = 0;
+  // 复活的槽不能带着上一条命的碰撞记忆出生，否则一落地就往旁边滑。
+  slot.nX = 0;
+  slot.nZ = 0;
+  slot.blockT = 0;
+  slot.wedgeT = 0;
+  slot.detourT = 0;
+  slot.detourX = 0;
+  slot.detourZ = 0;
   slot.alive = true;
 }
 

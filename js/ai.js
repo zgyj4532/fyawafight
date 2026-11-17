@@ -9,13 +9,95 @@
 
 import { CONFIG } from './config.js';
 import { pathSpeedMul } from './path.js';
-import { clipVelocity, resolve, substepCount } from './collision.js';
+import { clearanceAt, clipVelocity, resolve, substepCount } from './collision.js';
 import { pushOutOfLake } from './lake.js';
 
 const HOUND_SIDE = 2.4;
 const HOUND_BACK = 1.2;
 const MOVE_ANIM_SPEED = 0.2;
 const DASH_BLOCK_PUSH = 0.2;
+
+// --- 贴着障碍滑（2026-11-17 夜）--------------------------------------------
+//
+// 玩家截图里史莱姆顶在一捆干草上不动。量出来的原因不是"被挡住"，是**正对撞**：
+// 史莱姆的期望方向就是「朝玩家」，当障碍正好在两者连线上时，碰撞法线和期望速度
+// 完全反向，`clipVelocity` 把整条速度削成 0 —— 切向分量本来就是 0，没有东西可滑。
+// 下一帧方向还是对准玩家，于是永远停在那里。这不是概率极低的情况：
+// 一批怪从同一侧压上来、或者玩家站着不动，很容易落进这条对称轴。
+//
+// 处理：上一次移动吃到推力，就把法线记在自己身上；下一帧把期望方向**投影到切向**，
+// 顺着障碍表面滑过去。两条切向里取和"想去"同号的那条；正对撞时两者点积都是 0，
+// 按 id 奇偶分左右 —— 不然一群怪会全部往同一边挤。
+//
+// 只记 0.35 s：滑开之后就恢复直线追击，不会绕着障碍转圈。
+const CONTACT_MEMORY = 0.35;
+const CONTACT_SLIDE = 0.85;
+
+// **夹角死锁与绕行。** 两个物件挨得比怪的身体还窄时（实测一处石堆 + 桶只隔 1.03 m，
+// 史莱姆体宽 1.4 m），它挤进 V 字里，两条法线每帧交替推、合起来正好抵消，
+// 速度归零 —— 切向滑动救不了，因为没有哪一侧是"能滑过去"的。
+// 只往后退也不行：退出去再直线追回来，还是同一条线、同一个 V（实测 1.6 s 一个循环）。
+//
+// 所以夹住之后**换一条路**：以「朝玩家」为基准取左右各 72°/110° 四个候选点，
+// 3 m 外，用 clearanceAt 挑最空的那个当临时目标，走过去再恢复追击。
+// 它没有寻路，这一步就是它能做到的全部"绕"。
+const WEDGE_TIME = 0.45;
+const WEDGE_PROGRESS = 0.3;
+const DETOUR_TIME = 1.8;
+const DETOUR_DIST = 3.0;
+
+function planDetour(state, e, radius) {
+  const size = CONFIG.arena.size;
+  const aim = torusDelta(e.x, e.z, state.player.x, state.player.z, size);
+  const base = Math.atan2(aim.dx, aim.dz);
+  let bestScore = -Infinity;
+  let bx = e.x;
+  let bz = e.z;
+  for (let i = 0; i < 4; i += 1) {
+    // 两侧各两个角度。正后方（180°）不取：那是"逃跑"，绕不出去。
+    const spread = i < 2 ? 1.26 : 1.92;
+    const sign = i % 2 === 0 ? 1 : -1;
+    const a = base + sign * spread;
+    const tx = e.x + Math.sin(a) * DETOUR_DIST;
+    const tz = e.z + Math.cos(a) * DETOUR_DIST;
+    // 目标点和中点都要空：只算目标点会挑到"隔着另一堆货"的位置
+    const score = clearanceAt(tx, tz) - radius
+      + (clearanceAt((e.x + tx) * 0.5, (e.z + tz) * 0.5) - radius) * 0.6;
+    if (score > bestScore) {
+      bestScore = score;
+      bx = tx;
+      bz = tz;
+    }
+  }
+  return { x: bx, z: bz };
+}
+
+function slideAlongContact(e, vx, vz, speed) {
+  if (!(e.blockT > 0) || !(speed > 1e-6)) return { x: vx, z: vz };
+  const nx = e.nX;
+  const nz = e.nZ;
+  if (!(Math.abs(nx) + Math.abs(nz) > 1e-6)) return { x: vx, z: vz };
+  // 已经在往外走了（推力和期望同向）就不干预，避免在贴面处来回抖
+  if (vx * nx + vz * nz > 0.2 * speed) return { x: vx, z: vz };
+
+  const dot = vx * -nz + vz * nx;
+  let tx = -nz;
+  let tz = nx;
+  const nearlyHeadOn = Math.abs(dot) < 0.05 * speed;
+  if (dot < 0 || nearlyHeadOn) {
+    // 反向，或者正对着撞（切向分量为 0）：改用另一条切向 / 按 id 分左右
+    if (!nearlyHeadOn || (e.id & 1) === 0) {
+      tx = nz;
+      tz = -nx;
+    }
+  }
+
+  const mx = vx * (1 - CONTACT_SLIDE) + tx * speed * CONTACT_SLIDE;
+  const mz = vz * (1 - CONTACT_SLIDE) + tz * speed * CONTACT_SLIDE;
+  const m = Math.hypot(mx, mz);
+  if (m < 1e-6) return { x: vx, z: vz };
+  return { x: (mx / m) * speed, z: (mz / m) * speed };
+}
 
 function torusDelta(x1, z1, x2, z2, size) {
   let dx = x2 - x1;
@@ -67,7 +149,61 @@ function placeOnShore(e) {
 
 // mode: wrap 小怪穿门；block 追击夹在场内；dash 越界或被实物推出超过 0.2m 就停。
 // 湖的推开不记入这 0.2m：先记下 resolve 的 push，再推湖。
-function moveBody(e, vx, vz, step, mode) {
+function solidRadius(state, e) {
+  const table = state.assets && state.assets.bodyRadius;
+  const visual = table && table[e.kind];
+  const body = visual ? visual * (e.scale || 1) : 0;
+  return Math.max(e.radius || 0, body);
+}
+
+function separateBodies(state) {
+  const list = state.enemies;
+  const half = CONFIG.arena.half;
+  for (let pass = 0; pass < 4; pass += 1) {
+    let hit = false;
+    for (let i = 0; i < list.length; i += 1) {
+      const a = list[i];
+      if (!a.alive) continue;
+      const ra = solidRadius(state, a);
+      for (let j = i + 1; j < list.length; j += 1) {
+        const b = list[j];
+        if (!b.alive) continue;
+        let dx = b.x - a.x;
+        let dz = b.z - a.z;
+        const dist = Math.hypot(dx, dz);
+        const need = ra + solidRadius(state, b);
+        if (dist >= need) continue;
+        let nx = 1;
+        let nz = 0;
+        if (dist >= 1e-4) {
+          nx = dx / dist;
+          nz = dz / dist;
+        } else if ((a.id & 1) === 0) nx = -1;
+        const push = (need - dist) * 0.5;
+        a.x -= nx * push;
+        a.z -= nz * push;
+        b.x += nx * push;
+        b.z += nz * push;
+        hit = true;
+      }
+    }
+    if (!hit) break;
+  }
+  for (let i = 0; i < list.length; i += 1) {
+    const e = list[i];
+    if (!e.alive) continue;
+    const solved = takeResolve(e.x, e.z, solidRadius(state, e));
+    e.x = solved.x;
+    e.z = solved.z;
+    placeOnShore(e);
+    if (e.x < -half || e.x > half || e.z < -half || e.z > half) {
+      e.x = Math.min(half, Math.max(-half, e.x));
+      e.z = Math.min(half, Math.max(-half, e.z));
+    }
+  }
+}
+
+function moveBody(state, e, vx, vz, step, mode) {
   const half = CONFIG.arena.half;
   const slices = substepCount(Math.hypot(vx, vz) * step);
   const inv = 1 / slices;
@@ -88,7 +224,7 @@ function moveBody(e, vx, vz, step, mode) {
     e.x = nx;
     e.z = nz;
 
-    const hit = takeResolve(e.x, e.z, e.radius);
+    const hit = takeResolve(e.x, e.z, solidRadius(state, e));
     pushX = hit.pushX;
     pushZ = hit.pushZ;
     e.x = hit.x;
@@ -128,7 +264,7 @@ function moveBody(e, vx, vz, step, mode) {
       if (wrapped) {
         e.portalCd = portal.cooldown;
         e.portalSlow = portal.enemySlowTime;
-        const hit = takeResolve(e.x, e.z, e.radius);
+        const hit = takeResolve(e.x, e.z, solidRadius(state, e));
         pushX = hit.pushX;
         pushZ = hit.pushZ;
         e.x = hit.x;
@@ -141,6 +277,16 @@ function moveBody(e, vx, vz, step, mode) {
   const clipped = takeClip(vx, vz, pushX, pushZ);
   e.vx = clipped.x;
   e.vz = clipped.z;
+
+  // 记下正在顶着的那个面，下一帧顺着它滑（见 slideAlongContact）。
+  const pushLen = Math.hypot(pushX, pushZ);
+  if (pushLen > 1e-4) {
+    e.nX = pushX / pushLen;
+    e.nZ = pushZ / pushLen;
+    e.blockT = CONTACT_MEMORY;
+  } else if (e.blockT > 0) {
+    e.blockT = Math.max(0, e.blockT - step);
+  }
   return hitWall;
 }
 
@@ -221,7 +367,44 @@ function updateMinion(state, e, step) {
     vz = pushed.z;
   }
 
-  moveBody(e, vx, vz, step, family.wraps ? 'wrap' : 'block');
+  // 夹住了就换一条路走（见 planDetour）。绕行期间不理目标方向。
+  if (e.detourT > 0) {
+    e.detourT = Math.max(0, e.detourT - step);
+    const aim = torusDelta(e.x, e.z, e.detourX, e.detourZ, size);
+    if (aim.dist < 0.7) e.detourT = 0;
+    else if (aim.dist > 1e-6) {
+      vx = (aim.dx / aim.dist) * speed;
+      vz = (aim.dz / aim.dist) * speed;
+    }
+    e.blockT = 0;
+  } else {
+    // 正对着小障碍时直线追击会把自己钉死（见 slideAlongContact 的注释）：
+    // 贴着面走一瞬，绕过去之后 blockT 归零，立刻恢复直线。
+    const steered = slideAlongContact(e, vx, vz, speed);
+    vx = steered.x;
+    vz = steered.z;
+  }
+
+  const beforeX = e.x;
+  const beforeZ = e.z;
+  moveBody(state, e, vx, vz, step, family.wraps ? 'wrap' : 'block');
+
+  // 贴上了东西、却几乎没走成路 —— 计一次「挤住」。位移比按本帧该走的距离算，
+  // 所以慢的怪（史莱姆 1.6）和快的（猎狗）用同一套阈值。
+  const want = speed * step;
+  const moved = Math.hypot(e.x - beforeX, e.z - beforeZ);
+  const wedged = e.blockT > 0 && want > 1e-6 && moved < want * WEDGE_PROGRESS && e.detourT <= 0;
+  if (wedged) e.wedgeT += step;
+  else e.wedgeT = Math.max(0, e.wedgeT - step * 2);
+
+  if (e.wedgeT > WEDGE_TIME && speed > 1e-6) {
+    const plan = planDetour(state, e, solidRadius(state, e));
+    e.detourX = plan.x;
+    e.detourZ = plan.z;
+    e.detourT = DETOUR_TIME;
+    e.wedgeT = 0;
+  }
+
   const rate = turnTowardVelocity(e, step);
   e.anim = rate > MOVE_ANIM_SPEED ? 'walk' : 'idle';
   if (e.hitFlash > 0) e.anim = 'hit';
@@ -310,7 +493,7 @@ function updateHese(state, boss, step) {
       vx = (dx / dist) * speed;
       vz = (dz / dist) * speed;
     }
-    moveBody(boss, vx, vz, step, 'block');
+    moveBody(state, boss, vx, vz, step, 'block');
   } else if (boss.state === 'warn') {
     boss.vx = 0;
     boss.vz = 0;
@@ -335,7 +518,7 @@ function updateHese(state, boss, step) {
       vx = (boss.dashDirX / len) * phase.dashSpeed;
       vz = (boss.dashDirZ / len) * phase.dashSpeed;
     }
-    hitWall = moveBody(boss, vx, vz, step, 'dash');
+    hitWall = moveBody(state, boss, vx, vz, step, 'dash');
   }
 
   turnTowardVelocity(boss, step);
@@ -361,4 +544,5 @@ export function updateAIAndBoss(state, dt) {
 
   const boss = list[0];
   if (boss && boss.alive && boss.kind === 'hese') updateHese(state, boss, step);
+  separateBodies(state);
 }
