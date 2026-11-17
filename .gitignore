@@ -1,9 +1,67 @@
-# 本地检查点只跟踪源码。这些目录留在磁盘上，不进历史。
-models/
-generated-images/
-settingimg/
-docs/shots/
-.workbuddy/
-*.blend
+# 密钥与本机凭据。仓库里目前没有这类文件，规则先占住，避免以后随手提交。
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa
+id_ed25519
+id_ecdsa
+credentials.json
+**/secrets/
+.npmrc
+.netrc
+*.kdbx
+
+# 本地数据库与日志。生成服务的任务库是 *.sqlite，里面有任务号和下载记录。
+*.sqlite
+*.sqlite3
+*.db
+*.log
+
+# 系统与编辑器
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/
+*.swp
+*~
+
+# Python / Node
 __pycache__/
 *.pyc
+.venv/
+venv/
+node_modules/
+
+# Blender 工程与自动备份
+*.blend
+*.blend1
+*.blend2
+
+# 策划与制作笔记留在本机，不进仓库。
+docs/
+
+# 历史生成件、报价和任务回执不入库。运行时模型 models/active/ 要进仓库。
+models/*
+!models/active/
+generated-images/
+settingimg/
+
+# 本机代理笔记：任务回执、报价、记忆。不进仓库。
+.workbuddy/
+
+# 本机流水线。这些脚本写死了 Windows 用户目录，并调用本机的付费生成客户端。
+# 磁盘上保留，不进仓库。玩本游戏不需要它们。
+tools/lux3d_*.py
+tools/probe_*.mjs
+tools/shot_*.mjs
+tools/check_*.mjs
+tools/dbg_shot.mjs
+tools/_dbg_*.mjs
+tools/_stuck.json
+tools/_stuck_before.json
+tools/_zone/
