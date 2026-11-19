@@ -284,6 +284,18 @@ export const CONFIG = freeze({
       glb: 'models/active/enemies/ogre_rigged_v1.glb',
       legacyGlb: 'models/active/enemies/legacy/orge.glb',
       targetHeight: null,
+      // 字面量与 boss.recover、boss.p1.cooldown、ogre.contact 相同，对象还在构造，不能互相引用。
+      leap: {
+        enabled: true,
+        sight: 8,
+        windup: 1,
+        flight: 0.8,
+        apex: 3.2,
+        radius: 3,
+        recover: 1.5,
+        cooldown: 4.5,
+        damage: 22,
+      },
     },
   },
 

@@ -21,8 +21,12 @@ export const GROUND_STAIN = {
   uStainLen: { value: 14 },
   uStainColor: { value: new THREE.Color('#E8455C') },
   uStainAmt: { value: 0 },
+  uDiscOrigin: { value: [0, 1, 2, 3, 4, 5, 6, 7].map(() => new THREE.Vector2()) },
+  uDiscR: { value: new Float32Array(8) },
+  uDiscAmt: { value: new Float32Array(8) },
 };
 
+// 圆盘循环上界必须是字面量（GLSL ES 1.0），并且等于 actors.js 的 OGRE_POOL。
 export const STAIN_GLSL = `
 uniform float uStainOn;
 uniform vec2 uStainOrigin;
@@ -31,14 +35,26 @@ uniform float uStainHalf;
 uniform float uStainLen;
 uniform vec3 uStainColor;
 uniform float uStainAmt;
+uniform vec2 uDiscOrigin[8];
+uniform float uDiscR[8];
+uniform float uDiscAmt[8];
 float stainMask(vec2 p) {
-  if (uStainOn < 0.5) return 0.0;
-  vec2 d = p - uStainOrigin;
-  float along = dot(d, uStainDir);
-  float across = d.x * uStainDir.y - d.y * uStainDir.x;
-  float alongK = smoothstep(0.0, 0.28, along) * (1.0 - smoothstep(uStainLen - 0.28, uStainLen, along));
-  float acrossK = 1.0 - smoothstep(uStainHalf - 0.18, uStainHalf, abs(across));
-  return alongK * acrossK;
+  float rect = 0.0;
+  if (uStainOn >= 0.5) {
+    vec2 d = p - uStainOrigin;
+    float along = dot(d, uStainDir);
+    float across = d.x * uStainDir.y - d.y * uStainDir.x;
+    float alongK = smoothstep(0.0, 0.28, along) * (1.0 - smoothstep(uStainLen - 0.28, uStainLen, along));
+    float acrossK = 1.0 - smoothstep(uStainHalf - 0.18, uStainHalf, abs(across));
+    rect = alongK * acrossK * uStainAmt;
+  }
+  float disc = 0.0;
+  for (int i = 0; i < 8; i++) {
+    float dist = length(p - uDiscOrigin[i]);
+    float k = 1.0 - smoothstep(uDiscR[i] - 0.18, uDiscR[i], dist);
+    disc = max(disc, k * uDiscAmt[i]);
+  }
+  return max(rect, disc);
 }
 `;
 
@@ -58,12 +74,12 @@ vStainWorld = (modelMatrix * vec4(transformed, 1.0)).xyz;`,
     shader.fragmentShader = shader.fragmentShader.replace(
       '#include <alphamap_fragment>',
       `#include <alphamap_fragment>
-diffuseColor.rgb = mix(diffuseColor.rgb, uStainColor, stainMask(vStainWorld.xz) * uStainAmt);`,
+diffuseColor.rgb = mix(diffuseColor.rgb, uStainColor, stainMask(vStainWorld.xz));`,
     );
   };
   // prevKey 是 three 的原型方法，必须带 this 调用：
   // 它内部读的是 this.onBeforeCompile，裸调用会让 this 变成 undefined，整个 boot 直接抛错。
-  material.customProgramCacheKey = () => `ground-stain:${prevKey ? prevKey.call(material) : 'base'}`;
+  material.customProgramCacheKey = () => `ground-stain-disc:${prevKey ? prevKey.call(material) : 'base'}`;
 }
 
 const SIZE = CONFIG.arena.size;
@@ -528,13 +544,13 @@ float near = 1.0 - smoothstep(0.0, 3.2, length(vPathPos.xz - uPlayerXZ));
 dirt += uSheen * near * uActive;
 
 diffuseColor.rgb *= dirt;
-diffuseColor.rgb = mix(diffuseColor.rgb, uStainColor, stainMask(vPathPos.xz) * uStainAmt);
+diffuseColor.rgb = mix(diffuseColor.rgb, uStainColor, stainMask(vPathPos.xz));
 diffuseColor.a *= 1.0 - smoothstep(0.90, 1.0, av);
 `,
     );
   };
 
-  material.customProgramCacheKey = () => 'dirt-path-stain';
+  material.customProgramCacheKey = () => 'dirt-path-stain-disc';
   return material;
 }
 

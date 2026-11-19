@@ -262,6 +262,18 @@ function lightEnemy(slot, state, pos, kind, stats, elite, trap) {
   slot.detourT = 0;
   slot.detourX = 0;
   slot.detourZ = 0;
+  // 复用槽不能留下上一只的落点。
+  slot.leapCd = 0;
+  slot.lockX = 0;
+  slot.lockZ = 0;
+  slot.arcX = 0;
+  slot.arcZ = 0;
+  slot.arcDx = 0;
+  slot.arcDz = 0;
+  slot.leapH = 0;
+  slot.leapShow = 0;
+  slot.impactLatched = 0;
+  slot.rigged = false;
   slot.alive = true;
 }
 

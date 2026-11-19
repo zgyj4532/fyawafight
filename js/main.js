@@ -17,7 +17,7 @@ window.__state = state;
 // 构筑标记。**由 JS 写，不由 HTML 写** —— 这样才能区分「HTML 更新了但 js 被缓存」
 // 和「两边都是新的」。玩家反馈过三次「启动后什么都没改」，每次都要靠猜是不是缓存；
 // 有这一行，看一眼菜单底部就知道跑的是哪一版。
-const BUILD = '2026-11-19 · wait';
+const BUILD = '2026-11-19 · slam';
 document.getElementById('build-stamp').textContent = `构筑 ${BUILD}`;
 window.__build = BUILD;
 

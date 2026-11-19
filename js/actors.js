@@ -10,7 +10,7 @@ import { createToonGradientMap, findClip, loadAndNormalizeGLB } from './pipeline
 
 const NEAR = 16;
 const HOUND_POOL = 20;
-const OGRE_POOL = 6;
+const OGRE_POOL = 8;
 const CLIPS = {
   idle: 'idle|stand',
   walk: 'walk|run|jog|move',
@@ -107,8 +107,9 @@ function assignPool(pool, enemies, kind, player) {
   for (let i = 0; i < enemies.length; i += 1) {
     const e = enemies[i];
     if (!e.alive || e.kind !== kind) continue;
-    const d = Math.hypot(e.x - player.x, e.z - player.z);
-    if (d > NEAR) continue;
+    // 砸地途中走出 NEAR 也不能把槽让出去，否则人在飞、模型没了。
+    const held = kind === 'ogre' && (e.state === 'windup' || e.state === 'arc' || e.state === 'recover');
+    if (!held && Math.hypot(e.x - player.x, e.z - player.z) > NEAR) continue;
     want.push(e);
   }
   want.sort((a, b) => (
@@ -130,6 +131,11 @@ function assignPool(pool, enemies, kind, player) {
     free.enemyId = want[i].id;
     free.group.visible = true;
     keep.add(want[i].id);
+  }
+  for (let i = 0; i < enemies.length; i += 1) {
+    const e = enemies[i];
+    if (e.kind !== kind) continue;
+    e.rigged = keep.has(e.id);
   }
 }
 
@@ -190,7 +196,7 @@ function placePool(pool, enemies, dt) {
       slot.group.visible = false;
       continue;
     }
-    const y = terrainY(e.x, e.z);
+    const y = terrainY(e.x, e.z) + (e.leapH || 0);
     slot.group.position.set(e.x, y, e.z);
     slot.group.rotation.y = e.facing;
     const s = e.scale || 1;
@@ -495,6 +501,27 @@ export async function createActors(scene) {
         GROUND_STAIN.uStainOn.value = 0;
         GROUND_STAIN.uStainAmt.value = 0;
         bossAnim = '';
+      }
+
+      const origins = GROUND_STAIN.uDiscOrigin.value;
+      const radii = GROUND_STAIN.uDiscR.value;
+      const amts = GROUND_STAIN.uDiscAmt.value;
+      const leap = CONFIG.enemies.ogre.leap;
+      for (let i = 0; i < OGRE_POOL; i += 1) amts[i] = 0;
+      let disc = 0;
+      for (let i = 0; i < enemies.length && disc < OGRE_POOL; i += 1) {
+        const e = enemies[i];
+        if (!e.alive || e.kind !== 'ogre' || !e.rigged) continue;
+        if (e.state !== 'windup' && e.state !== 'arc' && !e.leapShow) continue;
+        origins[disc].set(e.lockX, e.lockZ);
+        radii[disc] = leap.radius;
+        if (e.state === 'windup') {
+          const u = leap.windup > 0 ? Math.min(1, e.stateT / leap.windup) : 1;
+          amts[disc] = 0.72 + 0.2 * u;
+        } else {
+          amts[disc] = 0.92;
+        }
+        disc += 1;
       }
 
       const bulletPool = state.bullets;
