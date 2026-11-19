@@ -9,7 +9,7 @@
 
 import * as THREE from 'three';
 import { CONFIG } from './config.js';
-import { createToonGradientMap } from './pipeline.js';
+import { cloneGrassTexture, createToonGradientMap } from './pipeline.js';
 
 // 冲刺预警不另画一块板。草地、路面、路堤共用这一组量，在自己的片元里把地面色染红，
 // 颜色就长在地形上，不会悬在坡上面。
@@ -874,11 +874,7 @@ function buildRamp() {
 }
 
 function rampMaterial() {
-  const texture = new THREE.TextureLoader().load('models/active/env/textures/env_base_grass.jpg');
-  texture.wrapS = THREE.RepeatWrapping;
-  texture.wrapT = THREE.RepeatWrapping;
-  texture.colorSpace = THREE.SRGBColorSpace;
-  texture.anisotropy = 8;
+  const texture = cloneGrassTexture();
   const material = new THREE.MeshToonMaterial({
     map: texture,
     // 路基不是草坪：踩实的路肩上草长不住，露出来的是土。

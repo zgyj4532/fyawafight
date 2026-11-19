@@ -8,9 +8,356 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
 const loader = new GLTFLoader();
 const draco = new DRACOLoader();
 draco.setDecoderPath('vendor/draco/');
+// Draco 每个网格独立解码（Google Draco / three.js #15249）。多网格场景用 worker 池
+// 才能并行；单网格模型也不会因此多下一次解码器。
+const dracoWorkers = Math.min(8, Math.max(4, navigator.hardwareConcurrency || 4));
+draco.setWorkerLimit(dracoWorkers);
 loader.setDRACOLoader(draco);
 let gradientMap = null;
 let synth = null;
+
+// _initDecoder 会再去拉 wrapper 和 wasm。这里把已经下好的字节直接交回去，
+// 避免解码器在关键路径上走两遍网络。
+const decoderBytes = new Map();
+const loadLibrary = draco._loadLibrary.bind(draco);
+draco._loadLibrary = function loadCachedLibrary(filename, responseType) {
+  if (decoderBytes.has(filename)) return Promise.resolve(decoderBytes.get(filename));
+  return loadLibrary(filename, responseType);
+};
+
+// 进主界面之前先把字节数摊进一条进度。GLTFLoader.loadAsync 只有文件个数，
+// 主角一个文件就占掉大部分时间，按个数走进度条会长时间停在半截。
+// 这里改成自己 fetch（能读到 Content-Length），解析完再把这一项记满。
+const loadTasks = new Map();
+const loadListeners = new Set();
+const decodedImages = new Map();
+let loadSeq = 0;
+let loadScheduled = false;
+let bootPresented = false;
+let grassTexture = null;
+let grassTexturePromise = null;
+let dracoPromise = null;
+const inflight = new Map();
+const PARSE_LIMIT = 4;
+let parseActive = 0;
+const parseWaiters = [];
+
+function loadLabel(url) {
+  if (url.includes('fyagent_cover')) return '封面';
+  if (url.includes('emblem_knight')) return '纹章';
+  if (url.includes('env_base_grass')) return '地面';
+  if (url.includes('draco_')) return '解码器';
+  if (url.includes('/hero/')) return '主角';
+  if (url.includes('/enemies/')) return '敌人';
+  if (url.includes('/anim/')) return '动作';
+  if (url.includes('/env/')) return '场景';
+  return '资源';
+}
+
+function loadSnapshot() {
+  let loaded = 0;
+  let total = 0;
+  let label = '';
+  let labelWeight = -1;
+  for (const task of loadTasks.values()) {
+    const known = task.total > 0;
+    const weight = known ? task.total : Math.max(task.loaded / 0.85, 256 * 1024);
+    let doneBytes;
+    if (task.done) doneBytes = weight;
+    else if (task.parsing) doneBytes = weight * 0.92;
+    else doneBytes = Math.min(task.loaded, weight * 0.9);
+    loaded += doneBytes;
+    total += weight;
+    if (!task.done && weight > labelWeight) {
+      labelWeight = weight;
+      label = task.label;
+    }
+  }
+  const raw = total > 0 ? loaded / total : 0;
+  return {
+    ratio: bootPresented ? 1 : raw * 0.92,
+    label,
+    presenting: !bootPresented && total > 0 && !label,
+  };
+}
+
+function flushLoadProgress() {
+  loadScheduled = false;
+  const snap = loadSnapshot();
+  for (const fn of loadListeners) fn(snap);
+}
+
+function emitLoadProgress() {
+  if (loadScheduled) return;
+  loadScheduled = true;
+  requestAnimationFrame(flushLoadProgress);
+}
+
+export function onAssetProgress(fn) {
+  loadListeners.add(fn);
+  fn(loadSnapshot());
+  return () => loadListeners.delete(fn);
+}
+
+export function finishBootPresentation() {
+  bootPresented = true;
+  flushLoadProgress();
+}
+
+function trackStart(url, label) {
+  const id = ++loadSeq;
+  loadTasks.set(id, { url, label: label || loadLabel(url), loaded: 0, total: 0, done: false, parsing: false });
+  emitLoadProgress();
+  return id;
+}
+
+function trackBytes(id, loaded, total) {
+  const task = loadTasks.get(id);
+  if (!task || task.done) return;
+  task.loaded = loaded;
+  if (total > 0) task.total = total;
+  emitLoadProgress();
+}
+
+function trackParsing(id) {
+  const task = loadTasks.get(id);
+  if (!task || task.done) return;
+  task.parsing = true;
+  if (task.total <= 0) task.total = Math.max(task.loaded, 1);
+  emitLoadProgress();
+}
+
+function trackDone(id) {
+  const task = loadTasks.get(id);
+  if (!task) return;
+  task.done = true;
+  task.parsing = false;
+  if (task.total <= 0) task.total = Math.max(task.loaded, 1);
+  task.loaded = task.total;
+  emitLoadProgress();
+}
+
+function trackFail(id) {
+  loadTasks.delete(id);
+  emitLoadProgress();
+}
+
+function priorityFor(url) {
+  if (url.includes('/hero/hero.glb') || url.includes('draco_decoder.wasm') || url.includes('fyagent_cover')) {
+    return 'high';
+  }
+  return 'auto';
+}
+
+function takeWarmResponse(url) {
+  const warm = window.__fyawaWarm;
+  if (!warm || typeof warm.take !== 'function') return null;
+  return warm.take(url);
+}
+
+async function readResponse(response, id) {
+  if (!response.ok) throw new Error(`${response.status} ${response.url || ''}`);
+  const declared = Number(response.headers.get('content-length')) || 0;
+  if (declared) trackBytes(id, 0, declared);
+  const reader = response.body && response.body.getReader ? response.body.getReader() : null;
+  if (!reader) {
+    const buffer = await response.arrayBuffer();
+    trackBytes(id, buffer.byteLength, buffer.byteLength);
+    return buffer;
+  }
+  const chunks = [];
+  let received = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+    received += value.byteLength;
+    trackBytes(id, received, declared);
+  }
+  const merged = new Uint8Array(received);
+  let offset = 0;
+  for (const chunk of chunks) {
+    merged.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  trackBytes(id, received, declared || received);
+  return merged.buffer;
+}
+
+function acquireParse(high) {
+  return new Promise((resolve) => {
+    const grant = () => {
+      parseActive += 1;
+      resolve(() => {
+        parseActive -= 1;
+        const next = parseWaiters.shift();
+        if (next) next();
+      });
+    };
+    if (parseActive < PARSE_LIMIT) grant();
+    else if (high) parseWaiters.unshift(grant);
+    else parseWaiters.push(grant);
+  });
+}
+
+async function fetchArrayBuffer(url, label) {
+  const existing = inflight.get(url);
+  if (existing) {
+    existing.readers += 1;
+    const buffer = await existing.promise;
+    return { id: existing.id, buffer: existing.readers > 1 ? buffer.slice(0) : buffer };
+  }
+  const id = trackStart(url, label);
+  const slot = { id, readers: 1, promise: null };
+  slot.promise = (async () => {
+    const warm = takeWarmResponse(url);
+    let response = null;
+    if (warm) {
+      try {
+        response = await warm;
+        if (!response.ok) response = null;
+      } catch (err) {
+        response = null;
+      }
+    }
+    if (!response) response = await fetch(url, { priority: priorityFor(url) });
+    return readResponse(response, id);
+  })().catch((err) => {
+    trackFail(id);
+    inflight.delete(url);
+    throw err;
+  });
+  inflight.set(url, slot);
+  const buffer = await slot.promise;
+  return { id, buffer: slot.readers > 1 ? buffer.slice(0) : buffer };
+}
+
+async function decodeImage(buffer, mime) {
+  const blobUrl = URL.createObjectURL(new Blob([buffer], mime ? { type: mime } : undefined));
+  const image = new Image();
+  image.src = blobUrl;
+  try {
+    if (image.decode) await image.decode();
+    else {
+      await new Promise((resolve, reject) => {
+        image.onload = () => resolve();
+        image.onerror = () => reject(new Error('图片没有解码'));
+      });
+    }
+  } catch (err) {
+    URL.revokeObjectURL(blobUrl);
+    throw err;
+  }
+  return image;
+}
+
+// wrapper 和 wasm 并行下。下载和后面的 GLB 抢的是同一条连接，所以不要串行等解码器
+// 再开始下模型（three.js #18097：几何下载不该排在别的资源后面）。
+export function preloadDracoDecoder() {
+  if (dracoPromise) return dracoPromise;
+  dracoPromise = (async () => {
+    const [wrapper, wasm] = await Promise.all([
+      fetchArrayBuffer('vendor/draco/draco_wasm_wrapper.js', '解码器'),
+      fetchArrayBuffer('vendor/draco/draco_decoder.wasm', '解码器'),
+    ]);
+    decoderBytes.set('draco_wasm_wrapper.js', new TextDecoder().decode(wrapper.buffer));
+    decoderBytes.set('draco_decoder.wasm', wasm.buffer);
+    trackDone(wrapper.id);
+    trackParsing(wasm.id);
+    try {
+      await draco._initDecoder();
+      trackDone(wasm.id);
+    } catch (err) {
+      trackFail(wasm.id);
+      throw err;
+    }
+  })();
+  return dracoPromise;
+}
+
+export function preloadDecodedImage(url, label) {
+  if (decodedImages.has(url)) return decodedImages.get(url);
+  const promise = (async () => {
+    const { id, buffer } = await fetchArrayBuffer(url, label);
+    try {
+      trackParsing(id);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      const image = await decodeImage(buffer);
+      trackDone(id);
+      return image;
+    } catch (err) {
+      trackFail(id);
+      throw err;
+    }
+  })().catch((err) => {
+    decodedImages.delete(url);
+    throw err;
+  });
+  decodedImages.set(url, promise);
+  return promise;
+}
+
+export function preloadedImage(url) {
+  return decodedImages.get(url) || null;
+}
+
+export function preloadCover(url) {
+  return (async () => {
+    const { id, buffer } = await fetchArrayBuffer(url, '封面');
+    try {
+      trackParsing(id);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      const image = await decodeImage(buffer, 'image/png');
+      const cover = document.getElementById('cover');
+      if (cover) cover.src = image.src;
+      trackDone(id);
+    } catch (err) {
+      trackFail(id);
+      throw err;
+    }
+  })();
+}
+
+export function preloadGrassTexture() {
+  if (grassTexturePromise) return grassTexturePromise;
+  grassTexturePromise = (async () => {
+    const url = 'models/active/env/textures/env_base_grass.jpg';
+    const { id, buffer } = await fetchArrayBuffer(url, '地面');
+    let image;
+    try {
+      trackParsing(id);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      image = await decodeImage(buffer, 'image/jpeg');
+    } catch (err) {
+      trackFail(id);
+      throw err;
+    }
+    const texture = new THREE.Texture(image);
+    texture.colorSpace = THREE.SRGBColorSpace;
+    texture.needsUpdate = true;
+    texture.wrapS = THREE.RepeatWrapping;
+    texture.wrapT = THREE.RepeatWrapping;
+    texture.anisotropy = 8;
+    grassTexture = texture;
+    trackDone(id);
+    return texture;
+  })().catch((err) => {
+    grassTexturePromise = null;
+    throw err;
+  });
+  return grassTexturePromise;
+}
+
+export function cloneGrassTexture() {
+  if (!grassTexture) throw new Error('草地贴图还没预加载');
+  const texture = grassTexture.clone();
+  texture.wrapS = THREE.RepeatWrapping;
+  texture.wrapT = THREE.RepeatWrapping;
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.anisotropy = 8;
+  texture.needsUpdate = true;
+  return texture;
+}
 
 // 光照查找表。原来 3 阶 + NearestFilter，明暗只有两次跳变，是所有材质
 // 「卡通味」的共同来源。改 8 阶 + LinearFilter 后过渡接近 Lambert，
@@ -76,34 +423,51 @@ export function findClip(clips, pattern) {
 }
 
 export async function loadAndNormalizeGLB(url, config = {}) {
-  const gltf = await loader.loadAsync(url);
-  const model = gltf.scene;
-  model.updateMatrixWorld(true);
+  const download = fetchArrayBuffer(url);
+  const decoder = preloadDracoDecoder().catch((err) => {
+    console.warn('[boot] Draco 预加载失败，继续尝试直接解析', err);
+  });
+  const { id, buffer } = await download;
+  await decoder;
+  trackParsing(id);
+  const release = await acquireParse(url.includes('/hero/hero.glb'));
+  try {
+    const path = url.slice(0, url.lastIndexOf('/') + 1);
+    const gltf = await loader.parseAsync(buffer, path);
+    const model = gltf.scene;
+    model.updateMatrixWorld(true);
 
-  const measured = new THREE.Box3().setFromObject(model);
-  const size = new THREE.Vector3();
-  measured.getSize(size);
-  if (config.autoScale && config.targetHeight > 0 && size.y > 0) {
-    model.scale.multiplyScalar(config.targetHeight / size.y);
+    const measured = new THREE.Box3().setFromObject(model);
+    const size = new THREE.Vector3();
+    measured.getSize(size);
+    if (config.autoScale && config.targetHeight > 0 && size.y > 0) {
+      model.scale.multiplyScalar(config.targetHeight / size.y);
+    }
+    if (config.scale && config.scale !== 1) model.scale.multiplyScalar(config.scale);
+    model.updateMatrixWorld(true);
+
+    const fitted = new THREE.Box3().setFromObject(model);
+    const center = new THREE.Vector3();
+    fitted.getCenter(center);
+    model.position.x -= center.x;
+    model.position.z -= center.z;
+    model.position.y -= fitted.min.y;
+    model.position.y += config.offsetY || 0;
+
+    const pivot = new THREE.Group();
+    pivot.rotation.y = config.rotationY || 0;
+    pivot.add(model);
+    convertToToon(pivot);
+
+    const clips = (gltf.animations || []).map(stripRootMotion);
+    trackDone(id);
+    return { pivot, clips, fallback: false };
+  } catch (err) {
+    trackFail(id);
+    throw err;
+  } finally {
+    release();
   }
-  if (config.scale && config.scale !== 1) model.scale.multiplyScalar(config.scale);
-  model.updateMatrixWorld(true);
-
-  const fitted = new THREE.Box3().setFromObject(model);
-  const center = new THREE.Vector3();
-  fitted.getCenter(center);
-  model.position.x -= center.x;
-  model.position.z -= center.z;
-  model.position.y -= fitted.min.y;
-  model.position.y += config.offsetY || 0;
-
-  const pivot = new THREE.Group();
-  pivot.rotation.y = config.rotationY || 0;
-  pivot.add(model);
-  convertToToon(pivot);
-
-  const clips = (gltf.animations || []).map(stripRootMotion);
-  return { pivot, clips, fallback: false };
 }
 
 export function createFallbackMesh(kind) {

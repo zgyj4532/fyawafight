@@ -9,6 +9,7 @@
 // 参数与三次失败记录见 docs/剧情_小刻与骑士团.md §9.1。
 
 import * as THREE from 'three';
+import { preloadedImage } from './pipeline.js';
 
 export const EMBLEM_DEFAULTS = {
   url: 'assets/emblem_knight.png',
@@ -47,7 +48,16 @@ export const EMBLEM_DEFAULTS = {
 // ---------- 贴图与 alpha ----------
 
 async function loadEmblemImage(url) {
-  const image = await new THREE.ImageLoader().loadAsync(url);
+  const cached = preloadedImage(url);
+  let image = null;
+  if (cached) {
+    try {
+      image = await cached;
+    } catch {
+      image = null;
+    }
+  }
+  if (!image) image = await new THREE.ImageLoader().loadAsync(url);
   const tex = new THREE.Texture(image);
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.anisotropy = 8;
