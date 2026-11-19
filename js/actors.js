@@ -202,7 +202,17 @@ function placePool(pool, enemies, dt) {
 
 export async function createActors(scene) {
   const gradient = createToonGradientMap();
-  const slimeSrc = await loadTemplate(CONFIG.enemies.slime.glb, CONFIG.enemies.slime.legacyGlb);
+  // 史莱姆、猎狗、食人魔、Boss、宝箱同时下。原先一个 await 接一个，
+  // 后面的模型要等前面解析完才开始要字节。
+  const slimeTask = loadTemplate(CONFIG.enemies.slime.glb, CONFIG.enemies.slime.legacyGlb);
+  const houndTask = loadTemplate(CONFIG.enemies.hound.glb, CONFIG.enemies.hound.legacyGlb);
+  const ogreTask = loadTemplate(CONFIG.enemies.ogre.glb, CONFIG.enemies.ogre.legacyGlb);
+  const chestTask = loadTemplate(CONFIG.chests.glb, CONFIG.chests.legacyGlb, {
+    autoScale: true,
+    targetHeight: CONFIG.chests.modelHeight,
+  });
+  const bossTask = createBossView();
+  const slimeSrc = await slimeTask;
   const slimeGeo = (slimeSrc && largestGeometry(slimeSrc.pivot)) || new THREE.SphereGeometry(0.45, 12, 8);
   const slimeFit = fitGround(slimeGeo, 1.15);
   slimeGeo.computeBoundingBox();
@@ -223,8 +233,8 @@ export async function createActors(scene) {
   slimes.frustumCulled = false;
   scene.add(slimes);
 
-  const houndSrc = await loadTemplate(CONFIG.enemies.hound.glb, CONFIG.enemies.hound.legacyGlb);
-  const ogreSrc = await loadTemplate(CONFIG.enemies.ogre.glb, CONFIG.enemies.ogre.legacyGlb);
+  const houndSrc = await houndTask;
+  const ogreSrc = await ogreTask;
   const hounds = [];
   const ogres = [];
   if (houndSrc) {
@@ -236,7 +246,7 @@ export async function createActors(scene) {
     for (let i = 0; i < OGRE_POOL; i += 1) ogres.push(makeRig(ogreSrc.pivot, ogreSrc.clips, scene));
   }
 
-  const boss = await createBossView();
+  const boss = await bossTask;
   bodyRadius.hese = horizontalRadius(boss.group);
   boss.group.visible = false;
   scene.add(boss.group);
@@ -272,10 +282,7 @@ export async function createActors(scene) {
   // 贴在箱子上方的部件：一颗浮起来的菱形宝石 + 地上一圈同色微光。
   // 宝石对应美术稿里"可换色菱形宝石"，微光对应"光缝"；宝石只做旋转和上下浮动，
   // 微光只做呼吸，两者都随 type.pulse 走 —— 陷阱箱 0.6 s 的急促呼吸仍然成立。
-  const chestSrc = await loadTemplate(CONFIG.chests.glb, CONFIG.chests.legacyGlb, {
-    autoScale: true,
-    targetHeight: CONFIG.chests.modelHeight,
-  });
+  const chestSrc = await chestTask;
   // 贴图是灰的（实测均色 95,96,91，R=G=B），进场景就是一块灰石头。
   // 乘一层暖色把它拉回"旧木箱"：0xEFD9BE 只压蓝通道，木色回棕、包角仍是浅灰，
   // 比直接给整个箱子染类型色温和得多（类型色交给宝石和地面微光）。

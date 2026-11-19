@@ -22,11 +22,18 @@ import { documentFor } from './documents.js';
 import { resetRun } from './state.js';
 import { assertClearances, colliderStats, debugSegmentCount, debugShapes, writeDebugXZ } from './collision.js';
 import {
+  cloneGrassTexture,
   createFallbackMesh,
   createSynth,
   createToonGradientMap,
   findClip,
+  finishBootPresentation,
   loadAndNormalizeGLB,
+  onAssetProgress,
+  preloadCover,
+  preloadDecodedImage,
+  preloadDracoDecoder,
+  preloadGrassTexture,
 } from './pipeline.js';
 
 const hud = {};
@@ -192,12 +199,8 @@ function startGame(state) {
 // 草地基底只提供从草叶缝隙里透出来的色温，不承担细节——
 // 在 69 px/m 的机位下，贴图里小于 2 cm 的东西都会被 mipmap 抹平。
 function groundTexture() {
-  const texture = new THREE.TextureLoader().load('models/active/env/textures/env_base_grass.jpg');
-  texture.wrapS = THREE.RepeatWrapping;
-  texture.wrapT = THREE.RepeatWrapping;
+  const texture = cloneGrassTexture();
   texture.repeat.set(4, 4);
-  texture.colorSpace = THREE.SRGBColorSpace;
-  texture.anisotropy = 8;
   return texture;
 }
 
@@ -218,12 +221,8 @@ const FAR_GROUND_SIZE = 680;
 const FAR_GROUND_TILE = 30;
 
 function farGroundTexture() {
-  const texture = new THREE.TextureLoader().load('models/active/env/textures/env_base_grass.jpg');
-  texture.wrapS = THREE.RepeatWrapping;
-  texture.wrapT = THREE.RepeatWrapping;
+  const texture = cloneGrassTexture();
   texture.repeat.set(FAR_GROUND_SIZE / FAR_GROUND_TILE, FAR_GROUND_SIZE / FAR_GROUND_TILE);
-  texture.colorSpace = THREE.SRGBColorSpace;
-  texture.anisotropy = 8;
   return texture;
 }
 
@@ -395,8 +394,61 @@ function buildColliderDebug() {
   return line;
 }
 
+function bindLoadingProgress() {
+  const fill = document.getElementById('loading-fill');
+  const status = document.getElementById('loading-status');
+  const bar = document.getElementById('loading-bar');
+  if (!fill || fill.dataset.bound === '1') return;
+  fill.dataset.bound = '1';
+  onAssetProgress((snap) => {
+    const pct = Math.round(snap.ratio * 100);
+    fill.style.transform = `scaleX(${snap.ratio})`;
+    if (bar) bar.setAttribute('aria-valuenow', String(pct));
+    if (!status) return;
+    if (snap.ratio >= 1) status.textContent = '准备完成';
+    else if (snap.presenting) status.textContent = `正在准备主界面 ${pct}%`;
+    else if (snap.label) status.textContent = `正在载入${snap.label} ${pct}%`;
+    else status.textContent = `正在载入资源 ${pct}%`;
+  });
+}
+
+function dismissLoading() {
+  const loading = document.getElementById('loading');
+  const menu = document.getElementById('menu');
+  if (menu) menu.hidden = false;
+  if (!loading || loading.hidden) return;
+  loading.classList.add('is-done');
+  const hide = () => {
+    loading.hidden = true;
+  };
+  loading.addEventListener('transitionend', hide, { once: true });
+  setTimeout(hide, 400);
+}
+
 export async function bootView(state) {
   bindMenu(state);
+  bindLoadingProgress();
+  // 封面、纹章、解码器和地面贴图跟后面的模型并行下。主界面要等这些都解码完，
+  // 并且第一帧（着色器编译）画完，再揭开，避免菜单自己在抖。
+  const coverTask = preloadCover('assets/cover/fyagent_cover.png').catch((err) => {
+    console.warn('[boot] 封面没有预先载入', err);
+    const img = document.getElementById('cover');
+    if (img && !img.getAttribute('src')) img.src = 'assets/cover/fyagent_cover.png';
+  });
+  const emblemTask = preloadDecodedImage('assets/emblem_knight.png', '纹章').catch((err) => {
+    console.warn('[boot] 纹章没有预先载入', err);
+  });
+  preloadDracoDecoder().catch((err) => {
+    console.warn('[boot] Draco 预加载失败', err);
+  });
+  const grassTask = preloadGrassTexture();
+  // 主角和场景模型在搭场景的同步工作之前就发出请求。否则要等草地、
+  // 道路网格建完，23 MB 的主角才开始下。
+  const heroTask = loadHero();
+  const evidenceTask = createEvidence();
+  const narrativeTask = createNarrativeScenery();
+  const landmarksTask = createLandmarks();
+  const sceneryTask = createScenery({ readyBeforeBushes: Promise.all([evidenceTask, narrativeTask, landmarksTask]) });
   const canvas = document.getElementById('view');
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false });
   renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -405,6 +457,7 @@ export async function bootView(state) {
   renderer.setSize(window.innerWidth, window.innerHeight);
 
   const scene = new THREE.Scene();
+  const actorsTask = createActors(scene);
   // 背景色 = 雾色。画面里没有地平线，看不到天，所以背景只在"地面没铺到"的地方
   // 露出来；让它和雾同色，万一露一条边也是雾，不是一块深色。
   scene.background = new THREE.Color(0x3a3644);
@@ -429,6 +482,7 @@ export async function bootView(state) {
   scene.add(menuLight);
   createToonGradientMap();
 
+  await grassTask;
   const groundMat = new THREE.MeshToonMaterial({ map: groundTexture(), color: 0xffffff, gradientMap: createToonGradientMap() });
   bindGroundStain(groundMat);
   // 四角的地面分区（见 js/zones.js）。必须排在 bindGroundStain 之后 ——
@@ -472,24 +526,8 @@ export async function bootView(state) {
   const roadProps = createRoadProps();
   scene.add(roadProps.group);
 
-  // 证据链陈设（A 组拴养排与转运场、B 组封条军箱与命令文书，见 js/evidence.js）。
-  // 第八批起换成 Lux3D 的五个 GLB，所以是异步的：和主角、叙事、体量层并行加载。
-  // 它补的是五幕里缺的那一段 —— 「兽是怎么来的」。位置接在幕四骨骸的两侧。
-  const evidenceTask = createEvidence();
-
-  // 叙事陈设（五幕，见 js/narrative.js）。八个体量物合计约 7 MB，和主角并行加载；
-  // 串行等的话，进场会多停两秒。
-  const narrativeTask = createNarrativeScenery();
-
-  // 四角专属地标（第三层，见 js/landmarks.js）。当前只有西南角骨骸复用现有 GLB，
-  // 其余三角待 Lux3D 生成后自动就位。同样并行加载，不挡进场。
-  const landmarksTask = createLandmarks();
-
-  // 体量层（远景的山、林、岩，见 js/scenery.js）。同样并行加载 ——
-  // 它回答的是「路外面还有没有世界」，没有它，远景是一望到底的空草地。
-  // 灌木的避让要在证据层、叙事层、地标层的碰撞形状注册完之后才准（见 scenery.js 的 bushClear），
-  // 所以把三边的 promise 递进去，体量层自己决定等到哪一步再种灌木。
-  const sceneryTask = createScenery({ readyBeforeBushes: Promise.all([evidenceTask, narrativeTask, landmarksTask]) });
+  // 证据链、叙事、地标、体量层的下载在 bootView 开头就和主角一起发出了。
+  // 灌木仍要等三边的碰撞形状注册完（见 scenery.js 的 bushClear）。
 
   // 边界全息力场（见 js/borderfx.js）。取代原来那四块平躺的紫色符纹贴片 ——
   // 贴片在 58° 俯视下只是一条略深的横带，玩家被传送走之前根本没注意到边界。
@@ -509,11 +547,10 @@ export async function bootView(state) {
   camera.fov = 28;
   camera.lookAt(1.6, 1.05, 0);
   camera.updateProjectionMatrix();
-  renderer.render(scene, camera);
 
   const __t0 = performance.now();
   console.info('[boot] 开始加载主角');
-  const loaded = await loadHero();
+  const loaded = await heroTask;
   console.info('[boot] 主角载入完成', Math.round(performance.now() - __t0), 'ms',
                'fallback=', loaded.fallback, 'clips=', loaded.clips.length);
   const narrative = await narrativeTask;
@@ -562,7 +599,7 @@ export async function bootView(state) {
   shadow.position.y = 0.03;
   scene.add(shadow);
   scene.add(hero);
-  const actors = await createActors(scene);
+  const actors = await actorsTask;
   state.assets.bodyRadius = actors.bodyRadius;
 
   // 调试观测点：地址栏加 ?boss=1 会在出生点右前方立一个 Boss，只走渲染，
@@ -634,6 +671,8 @@ export async function bootView(state) {
     showNote('');
   }
 
+  await coverTask;
+  await emblemTask;
   syncMenuCamera(state);
   syncHero(state, 0.05);
   state.view.hero.rotation.y = 0;
@@ -641,6 +680,8 @@ export async function bootView(state) {
   console.info('[boot] 首次整帧渲染前', Math.round(performance.now() - __t0), 'ms');
   renderer.render(scene, camera);
   console.info('[boot] 首次整帧渲染完成', Math.round(performance.now() - __t0), 'ms');
+  finishBootPresentation();
+  dismissLoading();
   window.__booted = true;
 
   window.addEventListener('resize', () => {

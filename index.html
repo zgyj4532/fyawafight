@@ -14,12 +14,81 @@
     }
   }
   </script>
+  <link rel="modulepreload" href="https://unpkg.com/three@0.168.0/build/three.module.js">
+  <link rel="modulepreload" href="js/main.js">
 </head>
 <body>
+  <script>
+    // 模块图还在解析时就开始下大文件。type=module 会推迟到文档解析完，
+    // 这段普通脚本在解析到这里就发出请求，主角不用等 Three.js 下完。
+    (function () {
+      var urls = [
+        'models/active/hero/hero.glb',
+        'vendor/draco/draco_decoder.wasm',
+        'vendor/draco/draco_wasm_wrapper.js',
+        'assets/cover/fyagent_cover.png',
+        'models/active/env/textures/env_base_grass.jpg',
+        'assets/emblem_knight.png',
+        'models/active/enemies/slime_rigged_v1.glb',
+        'models/active/enemies/hound_rigged_v1.glb',
+        'models/active/enemies/ogre_rigged_v1.glb',
+        'models/active/enemies/boss_knight_rigged_v1.glb',
+        'models/active/enemies/chest_rigged_v1.glb',
+        'models/active/env/body/forest_grove.glb',
+        'models/active/env/body/forest_tree.glb',
+        'models/active/env/body/rocks_cluster.glb',
+        'models/active/env/body/lake_pond.glb',
+        'models/active/env/body/tether_stake.glb',
+        'models/active/env/body/cage_cart.glb',
+        'models/active/env/body/shackle_chain.glb',
+        'models/active/env/body/sealed_crate.glb',
+        'models/active/env/body/order_packet.glb',
+        'models/active/env/body/clay_jar.glb',
+        'models/active/env/body/cultivation_trough.glb',
+        'models/active/env/body/ruin_tower.glb',
+        'models/active/env/body/canvas_tent.glb',
+        'models/active/env/body/beast_skeleton.glb',
+        'models/active/env/body/derelict_farmhouse.glb',
+        'models/active/env/body/stone_well.glb',
+        'models/active/env/body/ruins_pillar.glb',
+        'models/active/env/body/standing_stones.glb',
+        'models/active/env/body/ruins_arch_low.glb',
+        'models/active/env/body/gallows.glb',
+        'models/active/env/body/ruins_arch.glb',
+        'models/active/env/body/watchtower_ruin.glb',
+        'models/active/env/body/overturned_handcart.glb',
+        'models/active/env/body/broken_shield_sword.glb',
+        'models/active/env/body/cloak_cross.glb',
+        'models/active/env/body/campfire_remains.glb'
+      ];
+      var jobs = new Map();
+      urls.forEach(function (url) {
+        var priority = url.indexOf('/hero/hero.glb') >= 0 ? 'high' : 'auto';
+        jobs.set(url, fetch(url, { priority: priority }));
+      });
+      window.__fyawaWarm = {
+        take: function (url) {
+          var job = jobs.get(url);
+          if (!job) return null;
+          jobs.delete(url);
+          return job;
+        }
+      };
+    })();
+  </script>
   <!-- 区块 1 [STYLE & HUD DOM] 常驻：生命、经验、计时、击杀。其余按需显示。 -->
   <canvas id="view"></canvas>
-  <div id="menu">
-    <img id="cover" src="assets/cover/fyagent_cover.png" alt="FYAgent Survivors">
+  <div id="loading">
+    <div class="loading-card">
+      <p class="loading-title">FYAgent Survivors</p>
+      <p id="loading-status">正在载入资源 0%</p>
+      <div id="loading-bar" class="loading-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-label="载入进度">
+        <div id="loading-fill"></div>
+      </div>
+    </div>
+  </div>
+  <div id="menu" hidden>
+    <img id="cover" alt="FYAgent Survivors">
     <div id="menu-copy">
       <div class="menu-actions">
         <button id="btn-start" class="menu-btn primary" type="button">开始游戏</button>
@@ -145,10 +214,15 @@
   <!-- 区块 3–7 在 js/：config、state、pipeline、六个系统、main。 -->
   <script>
     window.addEventListener('error', (event) => {
+      const message = event.message || '页面脚本出错';
       const note = document.getElementById('boot-note');
-      if (!note) return;
-      note.hidden = false;
-      note.textContent = event.message || '页面脚本出错';
+      if (note) {
+        note.hidden = false;
+        note.textContent = message;
+      }
+      const loading = document.getElementById('loading');
+      const status = document.getElementById('loading-status');
+      if (loading && !loading.hidden && status) status.textContent = message;
     });
   </script>
   <script type="module" src="js/main.js"></script>
