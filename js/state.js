@@ -184,6 +184,7 @@ export function createState() {
       fromZ: CONFIG.camera.back,
       toX: 0,
       toZ: CONFIG.camera.back,
+      shake: 0,
     },
     weapon: { seekT: 0, target: -1 },
     upgrade: { pending: false, options: [], lastId: '' },

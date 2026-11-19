@@ -188,6 +188,7 @@ function startGame(state) {
   state.camera.fromZ = state.camera.z;
   state.camera.toX = state.camera.x;
   state.camera.toZ = state.camera.z;
+  state.camera.shake = 0;
   state.time.elapsed = 0;
   state.time.paused = false;
   state.time.scale = 1;
@@ -756,16 +757,72 @@ function syncMenuCamera(state) {
   state.view.menuLight.visible = true;
 }
 
-function syncCamera(state) {
+function hash01(n) {
+  const s = Math.sin(n) * 43758.5453;
+  return s - Math.floor(s);
+}
+
+// 注视点不动，相机绕着它偏。画面中心还是主角，边缘在抖。
+function slamOffset(state, camera, groundY) {
+  const kick = camera.shake;
+  if (!(kick > 0)) return null;
+  const amp = kick * kick * CONFIG.camera.slamKick;
+  const lookX = state.player.x;
+  const lookY = groundY + 0.9;
+  const lookZ = state.player.z;
+  let fx = lookX - camera.x;
+  let fy = lookY - camera.y;
+  let fz = lookZ - camera.z;
+  const fl = Math.hypot(fx, fy, fz) || 1;
+  fx /= fl;
+  fy /= fl;
+  fz /= fl;
+  let sx = -fz;
+  let sz = fx;
+  const sl = Math.hypot(sx, sz) || 1;
+  sx /= sl;
+  sz /= sl;
+  const ux = -sz * fy;
+  const uy = sz * fx - sx * fz;
+  const uz = sx * fy;
+  const seed = state.time.elapsed * 90;
+  const side = (hash01(seed) * 2 - 1) * 0.55;
+  const down = -1;
+  const len = Math.hypot(side, down);
+  return {
+    x: camera.x + (sx * side + ux * down) / len * amp,
+    y: camera.y + (uy * down) / len * amp,
+    z: camera.z + (sz * side + uz * down) / len * amp,
+    roll: (hash01(seed + 9) * 2 - 1) * kick * kick * CONFIG.camera.slamRoll,
+  };
+}
+
+function decaySlam(state, dt) {
+  const camera = state.camera;
+  if (!(camera.shake > 0)) return;
+  if (state.time.paused && state.phase === 'play') return;
+  const scale = state.phase === 'play' ? state.time.scale : 1;
+  const step = dt * scale;
+  camera.shake = Math.max(0, camera.shake - step / CONFIG.camera.slamShake);
+}
+
+function syncCamera(state, dt) {
   const view = state.view;
   const camera = state.camera;
   // 相机高度是 movement.js 缓出来的（带滞后），注视点用主角脚下的实时高度：
   // 两者差出来的那点视差，就是上坡/下坡能看出来的原因。
   const groundY = terrainY(state.player.x, state.player.z);
-  view.camera.position.set(camera.x, camera.y, camera.z);
+  const slam = slamOffset(state, camera, groundY);
+  view.camera.position.set(
+    slam ? slam.x : camera.x,
+    slam ? slam.y : camera.y,
+    slam ? slam.z : camera.z,
+  );
   view.camera.fov = camera.fov;
   view.camera.updateProjectionMatrix();
   view.camera.lookAt(state.player.x, groundY + 0.9, state.player.z);
+  if (slam) view.camera.rotateZ(slam.roll);
+  decaySlam(state, dt);
   view.menuLight.visible = false;
   const streaks = view.streaks;
   streaks.visible = camera.speedLineT > 0;
@@ -1072,7 +1129,7 @@ export function updateRenderAndHUD(state, dt) {
     }
     syncHero(state, dt);
     syncBorderFX(state);
-    syncCamera(state);
+    syncCamera(state, dt);
     syncHud(state);
     if (state.view.actors) state.view.actors.update(state, dt);
   } else {

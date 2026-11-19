@@ -507,12 +507,65 @@ export function createSynth() {
     charge: [90, 40, 0.28, 'sawtooth'],
     bossHit: [70, 30, 0.22, 'square'],
   };
+  // 轰是落地的一击：攻击要短，主体是往下掉的低频，再加一层很快灭掉的噪声。
+  // 跟 charge 一样的锯齿滑音听起来是在蓄力，不是砸中地面。
+  function playSlam(audio, volume, t) {
+    const body = audio.createOscillator();
+    const bodyGain = audio.createGain();
+    body.type = 'sine';
+    body.frequency.setValueAtTime(95, t);
+    body.frequency.exponentialRampToValueAtTime(30, t + 0.34);
+    bodyGain.gain.setValueAtTime(0.0001, t);
+    bodyGain.gain.exponentialRampToValueAtTime(0.24 * volume, t + 0.008);
+    bodyGain.gain.exponentialRampToValueAtTime(0.0001, t + 0.42);
+    body.connect(bodyGain);
+    bodyGain.connect(audio.destination);
+    body.start(t);
+    body.stop(t + 0.44);
+
+    const low = audio.createOscillator();
+    const lowGain = audio.createGain();
+    low.type = 'triangle';
+    low.frequency.setValueAtTime(52, t);
+    low.frequency.exponentialRampToValueAtTime(24, t + 0.36);
+    lowGain.gain.setValueAtTime(0.0001, t);
+    lowGain.gain.exponentialRampToValueAtTime(0.14 * volume, t + 0.012);
+    lowGain.gain.exponentialRampToValueAtTime(0.0001, t + 0.4);
+    low.connect(lowGain);
+    lowGain.connect(audio.destination);
+    low.start(t);
+    low.stop(t + 0.42);
+
+    const frames = Math.max(1, Math.floor(audio.sampleRate * 0.08));
+    const buffer = audio.createBuffer(1, frames, audio.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < frames; i += 1) data[i] = Math.random() * 2 - 1;
+    const noise = audio.createBufferSource();
+    noise.buffer = buffer;
+    const filter = audio.createBiquadFilter();
+    filter.type = 'lowpass';
+    filter.frequency.setValueAtTime(220, t);
+    filter.frequency.exponentialRampToValueAtTime(70, t + 0.08);
+    const noiseGain = audio.createGain();
+    noiseGain.gain.setValueAtTime(0.18 * volume, t);
+    noiseGain.gain.exponentialRampToValueAtTime(0.0001, t + 0.08);
+    noise.connect(filter);
+    filter.connect(noiseGain);
+    noiseGain.connect(audio.destination);
+    noise.start(t);
+    noise.stop(t + 0.09);
+  }
   synth = {
     play(name, volume = 1) {
       const audio = context();
-      const tone = tones[name];
-      if (!audio || !tone || volume <= 0) return;
+      if (!audio || volume <= 0) return;
       const t = audio.currentTime;
+      if (name === 'slam') {
+        playSlam(audio, volume, t);
+        return;
+      }
+      const tone = tones[name];
+      if (!tone) return;
       const osc = audio.createOscillator();
       const gain = audio.createGain();
       osc.type = tone[3];

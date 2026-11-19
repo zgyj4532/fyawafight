@@ -51,6 +51,10 @@ export const CONFIG = freeze({
     sweepEase: 'easeOutCubic',
     fovPeak: 52,
     speedLine: 0.15,
+    // 砸地。trauma 线性掉到 0，位移用平方，所以力在前几帧。正弦来回晃会发软。
+    slamShake: 0.3,
+    slamKick: 1.2,
+    slamRoll: 0.05,
   },
 
   player: {

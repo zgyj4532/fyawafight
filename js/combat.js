@@ -64,6 +64,13 @@ function failRun(state) {
   state.phase = 'result';
 }
 
+function hurtEnemy(state, enemy, amount) {
+  if (!enemy.alive || amount <= 0) return;
+  enemy.hp -= amount;
+  enemy.hitFlash = CONFIG.weapon.hitFlash;
+  if (enemy.hp <= 0) killEnemy(state, enemy);
+}
+
 function killEnemy(state, enemy) {
   enemy.alive = false;
   enemy.hp = 0;
@@ -334,13 +341,25 @@ function applyContact(state, step) {
 
 function applyBossDash(state) {
   const player = state.player;
-  if (!player.alive || player.invuln > 0) return;
   const boss = state.enemies[0];
-  if (!boss || !boss.alive || boss.state !== 'dash' || boss.dashHit) return;
+  if (!boss || !boss.alive || boss.state !== 'dash') return;
+  // 和玩家吃到的是同一个数：先按玩家防御减免，再原样扣在被撞到的怪身上。
+  const dealt = mitigate(CONFIG.boss.chargeDamage, player.def, CONFIG.player.incomingDefK);
+  const enemies = state.enemies;
+  for (let i = 1; i < enemies.length; i += 1) {
+    const enemy = enemies[i];
+    if (!enemy.alive || enemy.dashHit) continue;
+    if (enemy.kind !== 'slime' && enemy.kind !== 'ogre' && enemy.kind !== 'hound') continue;
+    if (enemy.leapH > 0) continue;
+    if (Math.hypot(boss.x - enemy.x, boss.z - enemy.z) > boss.radius + enemy.radius) continue;
+    enemy.dashHit = true;
+    hurtEnemy(state, enemy, dealt);
+  }
+  if (!player.alive || player.invuln > 0 || boss.dashHit) return;
   const dist = Math.hypot(boss.x - player.x, boss.z - player.z);
   if (dist > playerRadius() + boss.radius) return;
 
-  player.hp -= mitigate(CONFIG.boss.chargeDamage, player.def, CONFIG.player.incomingDefK);
+  player.hp -= dealt;
   const len = Math.hypot(boss.dashDirX, boss.dashDirZ);
   if (len > 1e-8) {
     player.x += (boss.dashDirX / len) * CONFIG.boss.chargeKnockback;
@@ -368,13 +387,24 @@ function applyOgreSlam(state) {
   const leap = CONFIG.enemies.ogre.leap;
   const blocked = !player.alive || player.invuln > 0;
   const enemies = state.enemies;
+  const dealt = mitigate(leap.damage, player.def, CONFIG.player.incomingDefK);
   for (let i = 0; i < enemies.length; i += 1) {
     const enemy = enemies[i];
     if (enemy.impactLatched !== 1) continue;
     enemy.impactLatched = 0;
+    const lockX = enemy.lockX;
+    const lockZ = enemy.lockZ;
+    for (let j = 0; j < enemies.length; j += 1) {
+      if (j === i) continue;
+      const other = enemies[j];
+      if (!other.alive) continue;
+      if (other.kind !== 'slime' && other.kind !== 'hese' && other.kind !== 'hound') continue;
+      if (Math.hypot(other.x - lockX, other.z - lockZ) > leap.radius) continue;
+      hurtEnemy(state, other, dealt);
+    }
     if (blocked) continue;
-    if (Math.hypot(player.x - enemy.lockX, player.z - enemy.lockZ) > leap.radius) continue;
-    player.hp -= mitigate(leap.damage, player.def, CONFIG.player.incomingDefK);
+    if (Math.hypot(player.x - lockX, player.z - lockZ) > leap.radius) continue;
+    player.hp -= dealt;
     player.hurtCd = HURT_COOLDOWN;
     state.fx.queue.push('hurt');
     state.fx.rumble = 'hurt';

@@ -341,7 +341,7 @@ function beginWindup(state, e, player) {
   state.fx.queue.push('charge');
 }
 
-function beginArc(e, leap) {
+function beginArc(state, e, leap) {
   e.arcX = e.x;
   e.arcZ = e.z;
   const delta = torusDelta(e.x, e.z, e.lockX, e.lockZ, CONFIG.arena.size);
@@ -353,7 +353,7 @@ function beginArc(e, leap) {
   e.vz = 0;
   e.leapH = 0;
   e.anim = 'attack';
-  if (!(leap.flight > 0)) landArc(e);
+  if (!(leap.flight > 0)) landArc(state, e);
 }
 
 function sampleArc(e, leap) {
@@ -364,7 +364,7 @@ function sampleArc(e, leap) {
   e.leapH = sample.height;
 }
 
-function landArc(e) {
+function landArc(state, e) {
   const placed = torusDelta(0, 0, e.arcX + e.arcDx, e.arcZ + e.arcDz, CONFIG.arena.size);
   e.x = placed.dx;
   e.z = placed.dz;
@@ -375,6 +375,10 @@ function landArc(e) {
   e.vx = 0;
   e.vz = 0;
   e.anim = e.hitFlash > 0 ? 'hit' : 'idle';
+  // 同一帧多只落地只轰一声。镜头重新打满，不把几次冲击叠成抽搐。
+  const queue = state.fx.queue;
+  if (queue[queue.length - 1] !== 'slam') queue.push('slam');
+  state.camera.shake = 1;
 }
 
 function updateOgre(state, e, step) {
@@ -396,7 +400,7 @@ function updateOgre(state, e, step) {
     e.anim = 'attack';
     e.leapH = 0;
     e.leapShow = 1;
-    if (e.stateT >= leap.windup) beginArc(e, leap);
+    if (e.stateT >= leap.windup) beginArc(state, e, leap);
     return true;
   }
 
@@ -408,7 +412,7 @@ function updateOgre(state, e, step) {
     e.vz = 0;
     e.anim = 'attack';
     e.leapShow = 1;
-    if (!(leap.flight > 0) || e.stateT >= leap.flight) landArc(e);
+    if (!(leap.flight > 0) || e.stateT >= leap.flight) landArc(state, e);
     else sampleArc(e, leap);
     return true;
   }
@@ -551,12 +555,15 @@ function beginWarn(state, boss) {
   if (halfHp(boss)) state.boss.summon += CONFIG.boss.p2.summon.count;
 }
 
-function beginDash(boss) {
+function beginDash(state, boss) {
   boss.state = 'dash';
   boss.stateT = 0;
   boss.telegraph = 0.2;
   boss.dashHit = false;
   boss.anim = 'attack';
+  // 上一冲撞过的标记清掉，这一冲才能再打到同一只怪。
+  const enemies = state.enemies;
+  for (let i = 1; i < enemies.length; i += 1) enemies[i].dashHit = false;
 }
 
 function beginRecover(boss, hitWall) {
@@ -584,7 +591,7 @@ function updateHese(state, boss, step) {
   } else if (boss.state === 'chase') {
     if (boss.stateT >= phase.cooldown) beginWarn(state, boss);
   } else if (boss.state === 'warn') {
-    if (boss.stateT >= phase.warn) beginDash(boss);
+    if (boss.stateT >= phase.warn) beginDash(state, boss);
   } else if (boss.state === 'dash') {
     if (boss.stateT >= cfg.p1.dashTime) beginRecover(boss, false);
   } else if (boss.state === 'recover') {
