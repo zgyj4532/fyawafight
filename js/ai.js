@@ -5,9 +5,11 @@
 // 权重本身就是 0…1 的连续值，敌人不必另存缓动状态。
 //
 // 赫塞：idle → chase → warn → dash → recover → chase。
+// 食人魔：chase → windup → arc → recover → chase。没绑到骨骼槽就留在 chase。
 // stateT 每帧先加上 step，进入新状态时归零。半血（hp < hpMax * p2.hpBelow）读 p2。
 
 import { CONFIG } from './config.js';
+import { leapSample } from './leap.js';
 import { pathSpeedMul } from './path.js';
 import { clearanceAt, clipVelocity, resolve, substepCount } from './collision.js';
 import { pushOutOfLake } from './lake.js';
@@ -159,15 +161,16 @@ function solidRadius(state, e) {
 function separateBodies(state) {
   const list = state.enemies;
   const half = CONFIG.arena.half;
+  // 弧线上的点和落地这一拍都是刚写好的终点。latch 要等本帧战斗清掉，这一拍推开会让模型和红圆分开。
   for (let pass = 0; pass < 4; pass += 1) {
     let hit = false;
     for (let i = 0; i < list.length; i += 1) {
       const a = list[i];
-      if (!a.alive) continue;
+      if (!a.alive || a.state === 'arc' || a.impactLatched === 1) continue;
       const ra = solidRadius(state, a);
       for (let j = i + 1; j < list.length; j += 1) {
         const b = list[j];
-        if (!b.alive) continue;
+        if (!b.alive || b.state === 'arc' || b.impactLatched === 1) continue;
         let dx = b.x - a.x;
         let dz = b.z - a.z;
         const dist = Math.hypot(dx, dz);
@@ -191,7 +194,7 @@ function separateBodies(state) {
   }
   for (let i = 0; i < list.length; i += 1) {
     const e = list[i];
-    if (!e.alive) continue;
+    if (!e.alive || e.state === 'arc' || e.impactLatched === 1) continue;
     const solved = takeResolve(e.x, e.z, solidRadius(state, e));
     e.x = solved.x;
     e.z = solved.z;
@@ -321,7 +324,130 @@ function separateOgres(state, e, vx, vz, speed) {
   return { x: ax, z: az };
 }
 
+function beginWindup(state, e, player) {
+  e.lockX = player.x;
+  e.lockZ = player.z;
+  e.state = 'windup';
+  e.stateT = 0;
+  e.detourT = 0;
+  e.vx = 0;
+  e.vz = 0;
+  e.leapH = 0;
+  e.leapShow = 1;
+  e.anim = 'attack';
+  const dx = e.lockX - e.x;
+  const dz = e.lockZ - e.z;
+  if (Math.hypot(dx, dz) > 1e-6) e.facing = Math.atan2(dx, dz);
+  state.fx.queue.push('charge');
+}
+
+function beginArc(state, e, leap) {
+  e.arcX = e.x;
+  e.arcZ = e.z;
+  const delta = torusDelta(e.x, e.z, e.lockX, e.lockZ, CONFIG.arena.size);
+  e.arcDx = delta.dx;
+  e.arcDz = delta.dz;
+  e.state = 'arc';
+  e.stateT = 0;
+  e.vx = 0;
+  e.vz = 0;
+  e.leapH = 0;
+  e.anim = 'attack';
+  if (!(leap.flight > 0)) landArc(state, e);
+}
+
+function sampleArc(e, leap) {
+  const sample = leapSample(e.stateT, leap.flight, leap.apex);
+  const placed = torusDelta(0, 0, e.arcX + e.arcDx * sample.u, e.arcZ + e.arcDz * sample.u, CONFIG.arena.size);
+  e.x = placed.dx;
+  e.z = placed.dz;
+  e.leapH = sample.height;
+}
+
+function landArc(state, e) {
+  const placed = torusDelta(0, 0, e.arcX + e.arcDx, e.arcZ + e.arcDz, CONFIG.arena.size);
+  e.x = placed.dx;
+  e.z = placed.dz;
+  e.leapH = 0;
+  e.impactLatched = 1;
+  e.state = 'recover';
+  e.stateT = 0;
+  e.vx = 0;
+  e.vz = 0;
+  e.anim = e.hitFlash > 0 ? 'hit' : 'idle';
+  // 同一帧多只落地只轰一声。镜头重新打满，不把几次冲击叠成抽搐。
+  const queue = state.fx.queue;
+  if (queue[queue.length - 1] !== 'slam') queue.push('slam');
+  state.camera.shake = 1;
+}
+
+function updateOgre(state, e, step) {
+  const leap = CONFIG.enemies.ogre.leap;
+  if (!leap.enabled) {
+    e.state = 'chase';
+    e.leapH = 0;
+    e.leapShow = 0;
+    e.impactLatched = 0;
+    return false;
+  }
+
+  if (e.state === 'windup') {
+    e.stateT += step;
+    e.portalSlow = Math.max(0, e.portalSlow - step);
+    e.portalCd = Math.max(0, e.portalCd - step);
+    e.vx = 0;
+    e.vz = 0;
+    e.anim = 'attack';
+    e.leapH = 0;
+    e.leapShow = 1;
+    if (e.stateT >= leap.windup) beginArc(state, e, leap);
+    return true;
+  }
+
+  if (e.state === 'arc') {
+    e.stateT += step;
+    e.portalSlow = Math.max(0, e.portalSlow - step);
+    e.portalCd = Math.max(0, e.portalCd - step);
+    e.vx = 0;
+    e.vz = 0;
+    e.anim = 'attack';
+    e.leapShow = 1;
+    if (!(leap.flight > 0) || e.stateT >= leap.flight) landArc(state, e);
+    else sampleArc(e, leap);
+    return true;
+  }
+
+  if (e.state === 'recover') {
+    e.stateT += step;
+    e.leapH = 0;
+    e.leapShow = 0;
+    if (e.stateT < leap.recover) {
+      e.portalSlow = Math.max(0, e.portalSlow - step);
+      e.portalCd = Math.max(0, e.portalCd - step);
+      e.vx = 0;
+      e.vz = 0;
+      e.anim = 'idle';
+      if (e.hitFlash > 0) e.anim = 'hit';
+      return true;
+    }
+    e.state = 'chase';
+    e.stateT = 0;
+    e.leapCd = leap.cooldown;
+    return false;
+  }
+
+  e.state = 'chase';
+  e.leapCd = Math.max(0, e.leapCd - step);
+  const player = state.player;
+  if (e.leapCd <= 0 && e.rigged && Math.hypot(e.x - player.x, e.z - player.z) <= leap.sight) {
+    beginWindup(state, e, player);
+    return true;
+  }
+  return false;
+}
+
 function updateMinion(state, e, step) {
+  if (e.kind === 'ogre' && updateOgre(state, e, step)) return;
   const family = CONFIG.enemies[e.kind];
   if (!family) return;
 
@@ -429,12 +555,15 @@ function beginWarn(state, boss) {
   if (halfHp(boss)) state.boss.summon += CONFIG.boss.p2.summon.count;
 }
 
-function beginDash(boss) {
+function beginDash(state, boss) {
   boss.state = 'dash';
   boss.stateT = 0;
   boss.telegraph = 0.2;
   boss.dashHit = false;
   boss.anim = 'attack';
+  // 上一冲撞过的标记清掉，这一冲才能再打到同一只怪。
+  const enemies = state.enemies;
+  for (let i = 1; i < enemies.length; i += 1) enemies[i].dashHit = false;
 }
 
 function beginRecover(boss, hitWall) {
@@ -462,7 +591,7 @@ function updateHese(state, boss, step) {
   } else if (boss.state === 'chase') {
     if (boss.stateT >= phase.cooldown) beginWarn(state, boss);
   } else if (boss.state === 'warn') {
-    if (boss.stateT >= phase.warn) beginDash(boss);
+    if (boss.stateT >= phase.warn) beginDash(state, boss);
   } else if (boss.state === 'dash') {
     if (boss.stateT >= cfg.p1.dashTime) beginRecover(boss, false);
   } else if (boss.state === 'recover') {

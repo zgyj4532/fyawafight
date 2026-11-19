@@ -46,6 +46,17 @@ function enemySlot(id) {
     detourT: 0,
     detourX: 0,
     detourZ: 0,
+    leapCd: 0,
+    lockX: 0,
+    lockZ: 0,
+    arcX: 0,
+    arcZ: 0,
+    arcDx: 0,
+    arcDz: 0,
+    leapH: 0,
+    leapShow: 0,
+    impactLatched: 0,
+    rigged: false,
   };
 }
 
@@ -173,6 +184,7 @@ export function createState() {
       fromZ: CONFIG.camera.back,
       toX: 0,
       toZ: CONFIG.camera.back,
+      shake: 0,
     },
     weapon: { seekT: 0, target: -1 },
     upgrade: { pending: false, options: [], lastId: '' },

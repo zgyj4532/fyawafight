@@ -64,6 +64,13 @@ function failRun(state) {
   state.phase = 'result';
 }
 
+function hurtEnemy(state, enemy, amount) {
+  if (!enemy.alive || amount <= 0) return;
+  enemy.hp -= amount;
+  enemy.hitFlash = CONFIG.weapon.hitFlash;
+  if (enemy.hp <= 0) killEnemy(state, enemy);
+}
+
 function killEnemy(state, enemy) {
   enemy.alive = false;
   enemy.hp = 0;
@@ -235,19 +242,23 @@ function hitEnemy(state, bulletIndex, enemy) {
   }
   enemy.hp -= mitigate(amount, def, CONFIG.formulas.outgoingDefK);
 
-  const vx = bullets.vx[bulletIndex];
-  const vz = bullets.vz[bulletIndex];
-  const speed = Math.hypot(vx, vz);
-  if (speed > 1e-8) {
-    enemy.x += (vx / speed) * weapon.knockback;
-    enemy.z += (vz / speed) * weapon.knockback;
+  // 腾空下一帧会盖掉这次推动。落地这一拍 latch 还在，击退会把模型推离锁点。
+  const pinned = (enemy.kind === 'ogre' && enemy.state === 'arc') || enemy.impactLatched === 1;
+  if (!pinned) {
+    const vx = bullets.vx[bulletIndex];
+    const vz = bullets.vz[bulletIndex];
+    const speed = Math.hypot(vx, vz);
+    if (speed > 1e-8) {
+      enemy.x += (vx / speed) * weapon.knockback;
+      enemy.z += (vz / speed) * weapon.knockback;
+    }
+    const table = state.assets && state.assets.bodyRadius;
+    const visual = table && table[enemy.kind];
+    const body = Math.max(enemy.radius || 0, visual ? visual * (enemy.scale || 1) : 0);
+    const solved = resolve(enemy.x, enemy.z, body);
+    enemy.x = solved.x;
+    enemy.z = solved.z;
   }
-  const table = state.assets && state.assets.bodyRadius;
-  const visual = table && table[enemy.kind];
-  const body = Math.max(enemy.radius || 0, visual ? visual * (enemy.scale || 1) : 0);
-  const solved = resolve(enemy.x, enemy.z, body);
-  enemy.x = solved.x;
-  enemy.z = solved.z;
 
   enemy.hitFlash = weapon.hitFlash;
   if (enemy.id === 0) {
@@ -297,7 +308,7 @@ function nearestContact(state) {
   let bestDist = 0;
   for (let i = 0; i < enemies.length; i += 1) {
     const enemy = enemies[i];
-    if (!enemy.alive || enemy.state === 'dash') continue;
+    if (!enemy.alive || enemy.state === 'dash' || enemy.state === 'arc' || enemy.impactLatched === 1) continue;
     const dist = Math.hypot(enemy.x - player.x, enemy.z - player.z);
     if (dist > playerRadius() + enemy.radius) continue;
     if (best === -1 || dist < bestDist) {
@@ -330,13 +341,25 @@ function applyContact(state, step) {
 
 function applyBossDash(state) {
   const player = state.player;
-  if (!player.alive || player.invuln > 0) return;
   const boss = state.enemies[0];
-  if (!boss || !boss.alive || boss.state !== 'dash' || boss.dashHit) return;
+  if (!boss || !boss.alive || boss.state !== 'dash') return;
+  // 和玩家吃到的是同一个数：先按玩家防御减免，再原样扣在被撞到的怪身上。
+  const dealt = mitigate(CONFIG.boss.chargeDamage, player.def, CONFIG.player.incomingDefK);
+  const enemies = state.enemies;
+  for (let i = 1; i < enemies.length; i += 1) {
+    const enemy = enemies[i];
+    if (!enemy.alive || enemy.dashHit) continue;
+    if (enemy.kind !== 'slime' && enemy.kind !== 'ogre' && enemy.kind !== 'hound') continue;
+    if (enemy.leapH > 0) continue;
+    if (Math.hypot(boss.x - enemy.x, boss.z - enemy.z) > boss.radius + enemy.radius) continue;
+    enemy.dashHit = true;
+    hurtEnemy(state, enemy, dealt);
+  }
+  if (!player.alive || player.invuln > 0 || boss.dashHit) return;
   const dist = Math.hypot(boss.x - player.x, boss.z - player.z);
   if (dist > playerRadius() + boss.radius) return;
 
-  player.hp -= mitigate(CONFIG.boss.chargeDamage, player.def, CONFIG.player.incomingDefK);
+  player.hp -= dealt;
   const len = Math.hypot(boss.dashDirX, boss.dashDirZ);
   if (len > 1e-8) {
     player.x += (boss.dashDirX / len) * CONFIG.boss.chargeKnockback;
@@ -356,6 +379,36 @@ function applyBossDash(state) {
   player.hurtCd = HURT_COOLDOWN;
   state.fx.queue.push('bossHit');
   state.fx.rumble = 'boss';
+  if (player.hp <= 0) failRun(state);
+}
+
+function applyOgreSlam(state) {
+  const player = state.player;
+  const leap = CONFIG.enemies.ogre.leap;
+  const blocked = !player.alive || player.invuln > 0;
+  const enemies = state.enemies;
+  const dealt = mitigate(leap.damage, player.def, CONFIG.player.incomingDefK);
+  for (let i = 0; i < enemies.length; i += 1) {
+    const enemy = enemies[i];
+    if (enemy.impactLatched !== 1) continue;
+    enemy.impactLatched = 0;
+    const lockX = enemy.lockX;
+    const lockZ = enemy.lockZ;
+    for (let j = 0; j < enemies.length; j += 1) {
+      if (j === i) continue;
+      const other = enemies[j];
+      if (!other.alive) continue;
+      if (other.kind !== 'slime' && other.kind !== 'hese' && other.kind !== 'hound') continue;
+      if (Math.hypot(other.x - lockX, other.z - lockZ) > leap.radius) continue;
+      hurtEnemy(state, other, dealt);
+    }
+    if (blocked) continue;
+    if (Math.hypot(player.x - lockX, player.z - lockZ) > leap.radius) continue;
+    player.hp -= dealt;
+    player.hurtCd = HURT_COOLDOWN;
+    state.fx.queue.push('hurt');
+    state.fx.rumble = 'hurt';
+  }
   if (player.hp <= 0) failRun(state);
 }
 
@@ -565,8 +618,8 @@ export function updateCombat(state, dt) {
   updateBullets(state, step);
   if (!player.alive) return;
   applyContact(state, step);
-  if (!player.alive) return;
-  applyBossDash(state);
+  if (player.alive) applyBossDash(state);
+  applyOgreSlam(state);
   if (!player.alive) return;
   updateGems(state, step);
   updateChests(state);

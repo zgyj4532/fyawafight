@@ -51,6 +51,10 @@ export const CONFIG = freeze({
     sweepEase: 'easeOutCubic',
     fovPeak: 52,
     speedLine: 0.15,
+    // 砸地。trauma 线性掉到 0，位移用平方，所以力在前几帧。正弦来回晃会发软。
+    slamShake: 0.3,
+    slamKick: 1.2,
+    slamRoll: 0.05,
   },
 
   player: {
@@ -284,6 +288,18 @@ export const CONFIG = freeze({
       glb: 'models/active/enemies/ogre_rigged_v1.glb',
       legacyGlb: 'models/active/enemies/legacy/orge.glb',
       targetHeight: null,
+      // 字面量与 boss.recover、boss.p1.cooldown、ogre.contact 相同，对象还在构造，不能互相引用。
+      leap: {
+        enabled: true,
+        sight: 8,
+        windup: 1,
+        flight: 0.8,
+        apex: 3.2,
+        radius: 3,
+        recover: 1.5,
+        cooldown: 4.5,
+        damage: 22,
+      },
     },
   },
 

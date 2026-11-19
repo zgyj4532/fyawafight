@@ -263,11 +263,11 @@ gl_Position = projectionMatrix * mvPosition;
     shader.fragmentShader = shader.fragmentShader.replace(
       '#include <alphamap_fragment>',
       `#include <alphamap_fragment>
-diffuseColor.rgb = mix(diffuseColor.rgb, uStainColor, stainMask(vStainWorld.xz) * uStainAmt);`,
+diffuseColor.rgb = mix(diffuseColor.rgb, uStainColor, stainMask(vStainWorld.xz));`,
     );
   };
 
-  material.customProgramCacheKey = () => 'grass-ring-stain';
+  material.customProgramCacheKey = () => 'grass-ring-stain-disc';
   return material;
 }
 
