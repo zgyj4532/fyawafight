@@ -218,9 +218,16 @@ html, body {
 }
 
 .loading-title {
-  margin: 0 0 18px;
+  margin: 0 0 8px;
   font-size: 22px;
   letter-spacing: 0.14em;
+}
+
+.loading-hint {
+  margin: 0 0 18px;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  color: rgba(244, 247, 251, 0.55);
 }
 
 #loading-status {
